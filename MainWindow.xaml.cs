@@ -28,15 +28,15 @@ namespace CadFilesUpdater.Windows
             var dialog = new OpenFileDialog
             {
                 Multiselect = true,
-                Filter = "Pliki AutoCAD (*.dwg)|*.dwg|Wszystkie pliki (*.*)|*.*",
-                Title = "Wybierz pliki AutoCAD"
+                Filter = "AutoCAD files (*.dwg)|*.dwg|All files (*.*)|*.*",
+                Title = "Select AutoCAD files"
             };
 
             if (dialog.ShowDialog() == true)
             {
                 _selectedFiles = dialog.FileNames.ToList();
                 FilesListBox.ItemsSource = _selectedFiles.Select(f => System.IO.Path.GetFileName(f));
-                FilesCountText.Text = $"Wybrano {_selectedFiles.Count} plików";
+                FilesCountText.Text = $"{_selectedFiles.Count} file(s) selected";
 
                 // Analyze files
                 try
@@ -50,14 +50,14 @@ namespace CadFilesUpdater.Windows
                     
                     if (_allBlocks.Count == 0)
                     {
-                        MessageBox.Show("Nie znaleziono żadnych bloków dynamicznych w wybranych plikach.", "Informacja", MessageBoxButton.OK, MessageBoxImage.Information);
+                        MessageBox.Show("No dynamic blocks found in selected files.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
                     }
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Błąd podczas analizy: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Error during analysis: {ex.Message}");
                     System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {ex.StackTrace}");
-                    MessageBox.Show($"Błąd podczas analizy plików: {ex.Message}", "Błąd", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show($"Error analyzing files: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
         }
@@ -167,16 +167,16 @@ namespace CadFilesUpdater.Windows
                 string.IsNullOrWhiteSpace(_selectedAttributeName) ||
                 string.IsNullOrWhiteSpace(ValueTextBox.Text))
             {
-                MessageBox.Show("Proszę wybrać blok, atrybut i wprowadzić wartość.", "Brak danych", 
+                MessageBox.Show("Please select a block, attribute and enter a value.", "Missing data", 
                     MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             var result = MessageBox.Show(
-                $"Czy na pewno chcesz uzupełnić wszystkie bloki '{_selectedBlockName}' " +
-                $"atrybutem '{_selectedAttributeName}' wartością '{ValueTextBox.Text}' " +
-                $"w {_selectedFiles.Count} plikach?",
-                "Potwierdzenie operacji",
+                $"Are you sure you want to update all blocks '{_selectedBlockName}' " +
+                $"with attribute '{_selectedAttributeName}' to value '{ValueTextBox.Text}' " +
+                $"in {_selectedFiles.Count} file(s)?",
+                "Confirm operation",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
 
@@ -196,16 +196,16 @@ namespace CadFilesUpdater.Windows
                     if (success)
                     {
                         MessageBox.Show(
-                            $"Operacja zakończona pomyślnie!\nZaktualizowano {_selectedFiles.Count} plików.",
-                            "Sukces",
+                            $"Operation completed successfully!\nUpdated {_selectedFiles.Count} file(s).",
+                            "Success",
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
                     }
                     else
                     {
                         MessageBox.Show(
-                            "Operacja zakończona z błędami. Sprawdź szczegóły w konsoli.",
-                            "Ostrzeżenie",
+                            "Operation completed with errors. Check console for details.",
+                            "Warning",
                             MessageBoxButton.OK,
                             MessageBoxImage.Warning);
                     }
@@ -213,8 +213,8 @@ namespace CadFilesUpdater.Windows
                 catch (Exception ex)
                 {
                     MessageBox.Show(
-                        $"Błąd podczas aktualizacji: {ex.Message}",
-                        "Błąd",
+                        $"Error during update: {ex.Message}",
+                        "Error",
                         MessageBoxButton.OK,
                         MessageBoxImage.Error);
                 }

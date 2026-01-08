@@ -21,7 +21,7 @@ namespace CadFilesUpdater
             }
             catch (System.Exception ex)
             {
-                Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\nBłąd: {ex.Message}\n");
+                Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\nError: {ex.Message}\n");
             }
         }
     }
