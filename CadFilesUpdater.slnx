@@ -3,7 +3,7 @@
     <Platform Name="Any CPU" />
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="CadFilesUpdater.csproj">
+  <Project Path="CadFilesUpdater.csproj" Id="57569ed6-e5bb-4f66-97ee-fff7c70b244f">
     <Platform Solution="*|x64" Project="x64" />
   </Project>
 </Solution>
