@@ -230,14 +230,20 @@ namespace CadFilesUpdater
             }
         }
 
-        public static bool UpdateBlocksInFiles(List<string> filePaths, string blockName, string attributeName, string value)
+        public static UpdateResult UpdateBlocksInFiles(List<string> filePaths, string blockName, string attributeName, string value, System.Action<int, int, string> progressCallback = null)
         {
-            bool allSuccess = true;
+            var result = new UpdateResult
+            {
+                TotalFiles = filePaths.Count
+            };
 
             foreach (var filePath in filePaths)
             {
                 try
                 {
+                    result.ProcessedFiles++;
+                    progressCallback?.Invoke(result.ProcessedFiles, result.TotalFiles, filePath);
+                    
                     DwgVersion originalVersion = GetFileVersion(filePath);
                     
                     using (var db = new Database(false, true))
@@ -274,17 +280,42 @@ namespace CadFilesUpdater
                             {
                                 db.SaveAs(filePath, originalVersion);
                             }
+                            
+                            result.SuccessfulFiles++;
                         }
                     }
                 }
+                catch (System.IO.IOException ioEx)
+                {
+                    string errorMsg = "File is in use by another application";
+                    if (ioEx.Message.Contains("locked") || ioEx.Message.Contains("access"))
+                    {
+                        errorMsg = "File is locked or access denied";
+                    }
+                    result.Errors.Add(new FileError(filePath, errorMsg));
+                    result.FailedFiles++;
+                    System.Diagnostics.Debug.WriteLine($"Błąd aktualizacji pliku {filePath}: {errorMsg}");
+                }
+                catch (Autodesk.AutoCAD.Runtime.Exception acadEx)
+                {
+                    string errorMsg = acadEx.Message;
+                    if (errorMsg.Contains("eFilerError"))
+                    {
+                        errorMsg = "File error - possibly corrupted or in use";
+                    }
+                    result.Errors.Add(new FileError(filePath, errorMsg));
+                    result.FailedFiles++;
+                    System.Diagnostics.Debug.WriteLine($"Błąd aktualizacji pliku {filePath}: {errorMsg}");
+                }
                 catch (Exception ex)
                 {
+                    result.Errors.Add(new FileError(filePath, ex.Message));
+                    result.FailedFiles++;
                     System.Diagnostics.Debug.WriteLine($"Błąd aktualizacji pliku {filePath}: {ex.Message}");
-                    allSuccess = false;
                 }
             }
 
-            return allSuccess;
+            return result;
         }
 
         private static bool UpdateBlocksInBlockTableRecord(Transaction tr, Database db, BlockTableRecord btr, string blockName, string attributeName, string value)

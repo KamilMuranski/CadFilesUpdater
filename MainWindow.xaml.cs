@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using CadFilesUpdater;
+using CadFilesUpdater.Windows;
 
 namespace CadFilesUpdater.Windows
 {
@@ -321,47 +323,80 @@ namespace CadFilesUpdater.Windows
 
             if (result == MessageBoxResult.Yes)
             {
-                try
+                // Show progress window
+                var progressWindow = new ProgressWindow
                 {
-                    this.Cursor = System.Windows.Input.Cursors.Wait;
-                    SubmitButton.IsEnabled = false;
+                    Owner = this
+                };
+                progressWindow.Show();
 
-                    bool success = BlockAnalyzer.UpdateBlocksInFiles(
-                        _selectedFiles,
-                        _selectedBlockName,
-                        _selectedAttributeName,
-                        ValueTextBox.Text);
+                SubmitButton.IsEnabled = false;
 
-                    if (success)
-                    {
-                        MessageBox.Show(
-                            $"Operation completed successfully!\nUpdated {_selectedFiles.Count} file(s).",
-                            "Success",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Information);
-                    }
-                    else
-                    {
-                        MessageBox.Show(
-                            "Operation completed with errors. Check console for details.",
-                            "Warning",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
-                    }
-                }
-                catch (Exception ex)
+                // Run update in background task
+                Task.Run(() =>
                 {
-                    MessageBox.Show(
-                        $"Error during update: {ex.Message}",
-                        "Error",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
-                }
-                finally
-                {
-                    this.Cursor = System.Windows.Input.Cursors.Arrow;
-                    SubmitButton.IsEnabled = true;
-                }
+                    try
+                    {
+                        var updateResult = BlockAnalyzer.UpdateBlocksInFiles(
+                            _selectedFiles,
+                            _selectedBlockName,
+                            _selectedAttributeName,
+                            ValueTextBox.Text,
+                            (processed, total, currentFile) =>
+                            {
+                                progressWindow.UpdateProgress(processed, total, currentFile);
+                            });
+
+                        // Close progress window and show results on UI thread
+                        Dispatcher.Invoke(() =>
+                        {
+                            progressWindow.Close();
+                            SubmitButton.IsEnabled = true;
+
+                            string message = $"Operation completed!\n\n";
+                            message += $"Successfully processed: {updateResult.SuccessfulFiles}/{updateResult.TotalFiles} file(s)\n";
+                            
+                            if (updateResult.FailedFiles > 0)
+                            {
+                                message += $"\nFailed: {updateResult.FailedFiles} file(s)\n\n";
+                                message += "Files with errors:\n";
+                                
+                                foreach (var error in updateResult.Errors)
+                                {
+                                    var fileName = System.IO.Path.GetFileName(error.FilePath);
+                                    message += $"  • {fileName}: {error.ErrorMessage}\n";
+                                }
+                                
+                                MessageBox.Show(
+                                    message,
+                                    updateResult.SuccessfulFiles > 0 ? "Completed with errors" : "Error",
+                                    MessageBoxButton.OK,
+                                    updateResult.SuccessfulFiles > 0 ? MessageBoxImage.Warning : MessageBoxImage.Error);
+                            }
+                            else
+                            {
+                                MessageBox.Show(
+                                    message,
+                                    "Success",
+                                    MessageBoxButton.OK,
+                                    MessageBoxImage.Information);
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Dispatcher.Invoke(() =>
+                        {
+                            progressWindow.Close();
+                            SubmitButton.IsEnabled = true;
+                            MessageBox.Show(
+                                $"Error during update: {ex.Message}",
+                                "Error",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Error);
+                        });
+                    }
+                });
             }
         }
     }
