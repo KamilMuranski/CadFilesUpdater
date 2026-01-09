@@ -226,18 +226,29 @@ namespace CadFilesUpdater
                 try
                 {
                     result.ProcessedFiles++;
+                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Processing file {result.ProcessedFiles}/{result.TotalFiles}: {filePath}");
+                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Current thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                    
                     // Invoke callback on UI thread if it's provided
                     if (progressCallback != null)
                     {
+                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Calling progress callback");
                         try
                         {
                             progressCallback(result.ProcessedFiles, result.TotalFiles, filePath);
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Progress callback completed successfully");
                         }
                         catch (Exception callbackEx)
                         {
                             // Ignore callback errors (e.g., if window is closed)
                             System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Callback error: {callbackEx.Message}");
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Callback error type: {callbackEx.GetType().FullName}");
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Callback error StackTrace: {callbackEx.StackTrace}");
                         }
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] progressCallback is null, skipping");
                     }
                     
                     DwgVersion originalVersion = GetFileVersion(filePath);
@@ -253,7 +264,9 @@ namespace CadFilesUpdater
 
                             // Update blocks in Model Space
                             var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-                            updated |= UpdateBlocksInBlockTableRecord(tr, db, ms, blockName, attributeName, value);
+                            bool msUpdated = UpdateBlocksInBlockTableRecord(tr, db, ms, blockName, attributeName, value);
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Model Space updated: {msUpdated}");
+                            updated |= msUpdated;
 
                             // Update blocks in all layouts (Paper Space)
                             var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
@@ -265,16 +278,26 @@ namespace CadFilesUpdater
                                     if (layout != null && layout.LayoutName != "Model")
                                     {
                                         var ps = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
-                                        updated |= UpdateBlocksInBlockTableRecord(tr, db, ps, blockName, attributeName, value);
+                                        bool psUpdated = UpdateBlocksInBlockTableRecord(tr, db, ps, blockName, attributeName, value);
+                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Layout '{layout.LayoutName}' updated: {psUpdated}");
+                                        updated |= psUpdated;
                                     }
                                 }
                             }
 
                             tr.Commit();
                             
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Transaction committed. updated={updated}");
+                            
                             if (updated)
                             {
+                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Saving file: {filePath}");
                                 db.SaveAs(filePath, originalVersion);
+                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] File saved successfully: {filePath}");
+                            }
+                            else
+                            {
+                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] No changes made to file: {filePath}, skipping SaveAs");
                             }
                             
                             result.SuccessfulFiles++;

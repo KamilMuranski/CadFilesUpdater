@@ -490,6 +490,15 @@ namespace CadFilesUpdater.Windows
 
             if (result == MessageBoxResult.Yes)
             {
+                // IMPORTANT: Copy all UI values to local variables BEFORE Task.Run
+                // This ensures we're not accessing UI objects from background thread
+                var selectedFiles = _selectedFiles.ToList(); // Create copy
+                var selectedBlockName = _selectedBlockName;
+                var selectedAttributeName = _selectedAttributeName;
+                var valueText = ValueTextBox.Text; // Copy text BEFORE Task.Run
+                
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Copied values on UI thread: {selectedFiles.Count} files, block: {selectedBlockName}, attribute: {selectedAttributeName}, value: {valueText}");
+                
                 // Show progress window
                 var progressWindow = new ProgressWindow
                 {
@@ -503,134 +512,227 @@ namespace CadFilesUpdater.Windows
                 var progressWindowRef = progressWindow;
                 
                 // Run update in background task
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Starting Task.Run on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
                 Task.Run(() =>
                 {
                     try
                     {
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Task.Run started on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
+                        
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Copied values: {selectedFiles.Count} files, block: {selectedBlockName}, attribute: {selectedAttributeName}");
+                        
                         var updateResult = BlockAnalyzer.UpdateBlocksInFiles(
-                            _selectedFiles,
-                            _selectedBlockName,
-                            _selectedAttributeName,
-                            ValueTextBox.Text,
+                            selectedFiles,
+                            selectedBlockName,
+                            selectedAttributeName,
+                            valueText,
                             (processed, total, currentFile) =>
                             {
-                                // Update progress window using MainWindow's Dispatcher
-                                // This ensures we're on the UI thread before accessing the window
-                                // DO NOT access progressWindowRef properties from background thread!
-                                Dispatcher.BeginInvoke(new Action(() =>
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Progress callback called on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}, processed: {processed}/{total}");
+                                
+                                // Update progress window - must use the window's own Dispatcher
+                                // Store values in local variables for thread safety
+                                var proc = processed;
+                                var tot = total;
+                                var file = currentFile ?? "";
+                                
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Progress callback: proc={proc}, tot={tot}, file={file}");
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
+                                
+                                // DO NOT access IsLoaded or any UI properties from background thread!
+                                // Just try to invoke through Dispatcher - let the callback check IsLoaded
+                                if (progressWindowRef != null && progressWindowRef.Dispatcher != null)
                                 {
                                     try
                                     {
-                                        // Check IsLoaded INSIDE Dispatcher callback (on UI thread)
-                                        if (progressWindowRef != null && progressWindowRef.IsLoaded)
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling Dispatcher.BeginInvoke from thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                                        progressWindowRef.Dispatcher.BeginInvoke(new Action(() =>
                                         {
-                                            progressWindowRef.UpdateProgress(processed, total, currentFile);
-                                        }
+                                            try
+                                            {
+                                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Inside Dispatcher callback on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                                                // Check IsLoaded INSIDE Dispatcher callback (on UI thread)
+                                                if (progressWindowRef != null && progressWindowRef.IsLoaded)
+                                                {
+                                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling UpdateProgress: {proc}/{tot}, file: {file}");
+                                                    progressWindowRef.UpdateProgress(proc, tot, file);
+                                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] UpdateProgress completed");
+                                                }
+                                                else
+                                                {
+                                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Progress window not loaded, skipping UpdateProgress");
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                // Log error but don't crash
+                                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Error in Dispatcher callback: {ex.Message}");
+                                                System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {ex.StackTrace}");
+                                            }
+                                        }), System.Windows.Threading.DispatcherPriority.Normal);
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher.BeginInvoke called successfully");
                                     }
-                                    catch (Exception ex)
+                                    catch (Exception dispatcherEx)
                                     {
-                                        // Log error but don't crash
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error updating progress: {ex.Message}");
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error invoking Dispatcher: {dispatcherEx.Message}");
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher Exception StackTrace: {dispatcherEx.StackTrace}");
                                     }
-                                }), System.Windows.Threading.DispatcherPriority.Normal);
+                                }
+                                else
+                                {
+                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef or Dispatcher is null, cannot update progress");
+                                }
                             });
+                        
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] UpdateBlocksInFiles completed. Result: {updateResult.SuccessfulFiles}/{updateResult.TotalFiles} successful, {updateResult.FailedFiles} failed");
 
                         // IMPORTANT: Copy all data from updateResult to local variables BEFORE Dispatcher.BeginInvoke
                         // This ensures thread safety - we're copying primitive types and strings, not UI objects
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Copying updateResult data to local variables");
                         var totalFiles = updateResult.TotalFiles;
                         var successfulFiles = updateResult.SuccessfulFiles;
                         var failedFiles = updateResult.FailedFiles;
                         var errors = updateResult.Errors.Select(error => new { 
-                            FilePath = error.FilePath, 
-                            ErrorMessage = error.ErrorMessage 
+                            FilePath = error.FilePath ?? "", 
+                            ErrorMessage = error.ErrorMessage ?? "" 
                         }).ToList(); // Create anonymous objects with copied strings
                         
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Copied data: total={totalFiles}, success={successfulFiles}, failed={failedFiles}, errors={errors.Count}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
+                        
                         // Close progress window and show results on UI thread
-                        Dispatcher.BeginInvoke(new Action(() =>
+                        // Use the window's Dispatcher for thread safety
+                        if (progressWindowRef != null && progressWindowRef.Dispatcher != null)
                         {
-                            try
+                            System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling Dispatcher.BeginInvoke for results on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                            progressWindowRef.Dispatcher.BeginInvoke(new Action(() =>
                             {
-                                if (progressWindowRef != null)
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Inside results Dispatcher callback on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
                                 {
-                                    progressWindowRef.Close();
-                                }
-                                SubmitButton.IsEnabled = true;
-
-                                string message = $"Operation completed!\n\n";
-                                message += $"Successfully processed: {successfulFiles}/{totalFiles} file(s)\n";
-                                
-                                if (failedFiles > 0)
-                                {
-                                    message += $"\nFailed: {failedFiles} file(s)\n\n";
-                                    message += "Files that could not be processed:\n";
-                                    
-                                    // Simply list file names - don't try to access error details that might cause thread issues
-                                    foreach (var error in errors)
+                                    try
                                     {
-                                        try
+                                        if (progressWindowRef != null)
                                         {
-                                            var fileName = System.IO.Path.GetFileName(error.FilePath);
-                                            message += $"  • {fileName}\n";
+                                            progressWindowRef.Close();
                                         }
-                                        catch
+                                        SubmitButton.IsEnabled = true;
+
+                                        string message = $"Operation completed!\n\n";
+                                        message += $"Successfully processed: {successfulFiles}/{totalFiles} file(s)\n";
+
+                                        if (failedFiles > 0)
                                         {
-                                            // If we can't get filename, just skip this entry
+                                            message += $"\nFailed: {failedFiles} file(s)\n\n";
+                                            message += "Files that could not be processed:\n";
+
+                                            // Simply list file names - don't try to access error details that might cause thread issues
+                                            foreach (var error in errors)
+                                            {
+                                                try
+                                                {
+                                                    var fileName = System.IO.Path.GetFileName(error.FilePath);
+                                                    message += $"  • {fileName}\n";
+                                                }
+                                                catch
+                                                {
+                                                    // If we can't get filename, just skip this entry
+                                                }
+                                            }
+
+                                            MessageBox.Show(
+                                                message,
+                                                successfulFiles > 0 ? "Completed with errors" : "Error",
+                                                MessageBoxButton.OK,
+                                                successfulFiles > 0 ? MessageBoxImage.Warning : MessageBoxImage.Error);
+                                        }
+                                        else
+                                        {
+                                            MessageBox.Show(
+                                                message,
+                                                "Success",
+                                                MessageBoxButton.OK,
+                                                MessageBoxImage.Information);
                                         }
                                     }
-                                    
-                                    MessageBox.Show(
-                                        message,
-                                        successfulFiles > 0 ? "Completed with errors" : "Error",
-                                        MessageBoxButton.OK,
-                                        successfulFiles > 0 ? MessageBoxImage.Warning : MessageBoxImage.Error);
+                                    catch (Exception uiEx)
+                                    {
+                                        // Fallback error handling
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error showing results: {uiEx.Message}");
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {uiEx.StackTrace}");
+                                        MessageBox.Show(
+                                            $"Error displaying results: {uiEx.Message}",
+                                            "Error",
+                                            MessageBoxButton.OK,
+                                            MessageBoxImage.Error);
+                                    }
                                 }
-                                else
-                                {
-                                    MessageBox.Show(
-                                        message,
-                                        "Success",
-                                        MessageBoxButton.OK,
-                                        MessageBoxImage.Information);
-                                }
-                            }
-                            catch (Exception uiEx)
-                            {
-                                // Fallback error handling
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Error showing results: {uiEx.Message}");
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {uiEx.StackTrace}");
-                                MessageBox.Show(
-                                    $"Error displaying results: {uiEx.Message}",
-                                    "Error",
-                                    MessageBoxButton.OK,
-                                    MessageBoxImage.Error);
-                            }
-                        }), System.Windows.Threading.DispatcherPriority.Normal);
+                            }), System.Windows.Threading.DispatcherPriority.Normal);
+                            System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher.BeginInvoke for results called successfully");
+                        }
+                        else
+                        {
+                            // Fallback if Dispatcher is not available
+                            System.Diagnostics.Debug.WriteLine("[MainWindow] Dispatcher not available for showing results");
+                            System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
+                            System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
+                        }
                     }
                     catch (Exception ex)
                     {
-                        // Copy exception message to local variable before Dispatcher.BeginInvoke
-                        var errorMessage = ex.Message;
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Exception in Task.Run: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Exception type: {ex.GetType().FullName}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {ex.StackTrace}");
                         
-                        Dispatcher.BeginInvoke(new Action(() =>
+                        // Copy exception message to local variable before Dispatcher.BeginInvoke
+                        var errorMessage = ex.Message ?? "Unknown error";
+                        
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
+                        
+                        // Use the window's Dispatcher for thread safety
+                        if (progressWindowRef != null && progressWindowRef.Dispatcher != null)
                         {
+                            System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling Dispatcher.BeginInvoke for error on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
                             try
                             {
-                                if (progressWindowRef != null)
+                                progressWindowRef.Dispatcher.BeginInvoke(new Action(() =>
                                 {
-                                    progressWindowRef.Close();
-                                }
-                                SubmitButton.IsEnabled = true;
-                                MessageBox.Show(
-                                    $"Error during update: {errorMessage}",
-                                    "Error",
-                                    MessageBoxButton.OK,
-                                    MessageBoxImage.Error);
+                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Inside error Dispatcher callback on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+                                    try
+                                    {
+                                        if (progressWindowRef != null)
+                                        {
+                                            progressWindowRef.Close();
+                                        }
+                                        SubmitButton.IsEnabled = true;
+                                        MessageBox.Show(
+                                            $"Error during update: {errorMessage}",
+                                            "Error",
+                                            MessageBoxButton.OK,
+                                            MessageBoxImage.Error);
+                                    }
+                                    catch (Exception innerEx)
+                                    {
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error in error handler: {innerEx.Message}");
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Inner exception StackTrace: {innerEx.StackTrace}");
+                                        // Ignore if window is already closed
+                                    }
+                                }), System.Windows.Threading.DispatcherPriority.Normal);
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher.BeginInvoke for error called successfully");
                             }
-                            catch
+                            catch (Exception dispatcherEx)
                             {
-                                // Ignore if window is already closed
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Error calling Dispatcher.BeginInvoke for error: {dispatcherEx.Message}");
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher exception StackTrace: {dispatcherEx.StackTrace}");
                             }
-                        }), System.Windows.Threading.DispatcherPriority.Normal);
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine("[MainWindow] Dispatcher not available for showing error");
+                        }
                     }
                 });
             }
