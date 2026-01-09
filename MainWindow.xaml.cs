@@ -67,25 +67,50 @@ namespace CadFilesUpdater.Windows
             var searchText = BlockSearchBox.Text.ToLower();
             System.Diagnostics.Debug.WriteLine($"[MainWindow] Wyszukiwanie bloków: '{searchText}' (wszystkich bloków: {_allBlocks.Count})");
             
-            if (string.IsNullOrWhiteSpace(searchText))
-            {
-                _filteredBlocks = _allBlocks.ToList();
-            }
-            else
-            {
-                _filteredBlocks = _allBlocks
-                    .Where(b => b.BlockName.ToLower().Contains(searchText))
-                    .ToList();
-            }
+            // Temporarily unsubscribe from SelectionChanged to avoid triggering during filtering
+            BlocksListBox.SelectionChanged -= BlocksListBox_SelectionChanged;
             
-            System.Diagnostics.Debug.WriteLine($"[MainWindow] Znaleziono {_filteredBlocks.Count} bloków pasujących do '{searchText}'");
-            UpdateBlocksList();
+            try
+            {
+                if (string.IsNullOrWhiteSpace(searchText))
+                {
+                    _filteredBlocks = _allBlocks.ToList();
+                }
+                else
+                {
+                    _filteredBlocks = _allBlocks
+                        .Where(b => b.BlockName.ToLower().Contains(searchText))
+                        .ToList();
+                }
+                
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Znaleziono {_filteredBlocks.Count} bloków pasujących do '{searchText}'");
+                
+                // Clear selection before updating
+                BlocksListBox.SelectedItem = null;
+                _selectedBlockName = null;
+                _allAttributes.Clear();
+                _filteredAttributes.Clear();
+                UpdateAttributesList();
+                AttributeSearchBox.IsEnabled = false;
+                AttributesListBox.IsEnabled = false;
+                
+                UpdateBlocksList();
+            }
+            finally
+            {
+                // Re-subscribe to SelectionChanged
+                BlocksListBox.SelectionChanged += BlocksListBox_SelectionChanged;
+            }
         }
 
         private void UpdateBlocksList()
         {
             var blockNames = _filteredBlocks.Select(b => b.BlockName).OrderBy(n => n).ToList();
             System.Diagnostics.Debug.WriteLine($"[MainWindow] Aktualizuję listę bloków. Liczba: {blockNames.Count}");
+            
+            // Clear selection before updating ItemsSource to prevent index mismatch
+            BlocksListBox.SelectedItem = null;
+            BlocksListBox.ItemsSource = null;
             BlocksListBox.ItemsSource = blockNames;
         }
 
