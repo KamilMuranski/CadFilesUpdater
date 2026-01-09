@@ -130,13 +130,15 @@ namespace CadFilesUpdater.Windows
             var selectedFileNames = selectedFilePaths.Select(f => System.IO.Path.GetFileName(f)).ToList();
             System.Diagnostics.Debug.WriteLine($"[MainWindow] Zaznaczono {_selectedFilesForFiltering.Count} plików: {string.Join(", ", selectedFileNames)}");
             
-            // Clear attributes when file selection changes
+            // Clear block selection and attributes when file selection changes
+            // This must be done before updating blocks list
             BlocksListBox.SelectedItem = null;
             _selectedBlockName = null;
             _selectedAttributeName = null;
             _allAttributes.Clear();
             _filteredAttributes.Clear();
-            UpdateAttributesList();
+            AttributesListBox.ItemsSource = null; // Clear the view immediately
+            AttributeSearchBox.Text = ""; // Clear search text
             AttributeSearchBox.IsEnabled = false;
             AttributesListBox.IsEnabled = false;
             AttributeSearchPlaceholder.Visibility = Visibility.Visible;
@@ -146,6 +148,7 @@ namespace CadFilesUpdater.Windows
             // Re-apply filters with new file selection
             ApplyFilters();
             UpdateBlocksList();
+            // UpdateBlocksList will handle automatic selection if there's only one block
         }
 
         private void BlockSearchBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -243,18 +246,32 @@ namespace CadFilesUpdater.Windows
                 // Set new ItemsSource
                 BlocksListBox.ItemsSource = blockNames;
                 System.Diagnostics.Debug.WriteLine($"[MainWindow] Ustawiono ItemsSource. Liczba elementów w BlocksListBox: {BlocksListBox.Items.Count}");
+            }
+            finally
+            {
+                // Re-subscribe to SelectionChanged FIRST
+                BlocksListBox.SelectionChanged += BlocksListBox_SelectionChanged;
                 
-                // If there's only one block, automatically select it
+                // If there's only one block, automatically select it AFTER re-subscribing
+                // This will trigger SelectionChanged which will load attributes
                 if (blockNames.Count == 1)
                 {
                     BlocksListBox.SelectedItem = blockNames[0];
                     System.Diagnostics.Debug.WriteLine($"[MainWindow] Automatycznie zaznaczono jedyny dostępny blok: {blockNames[0]}");
+                    // SelectionChanged will be triggered automatically and will load attributes
                 }
-            }
-            finally
-            {
-                // Re-subscribe to SelectionChanged
-                BlocksListBox.SelectionChanged += BlocksListBox_SelectionChanged;
+                else
+                {
+                    // Make sure attributes are cleared if no blocks or multiple blocks
+                    _allAttributes.Clear();
+                    _filteredAttributes.Clear();
+                    AttributesListBox.ItemsSource = null;
+                    AttributeSearchBox.IsEnabled = false;
+                    AttributesListBox.IsEnabled = false;
+                    AttributeSearchPlaceholder.Visibility = Visibility.Visible;
+                    ValueTextBox.Text = "";
+                    ValueTextBox.IsEnabled = false;
+                }
             }
         }
 
