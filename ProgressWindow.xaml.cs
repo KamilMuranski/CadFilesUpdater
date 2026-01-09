@@ -1,3 +1,4 @@
+using System;
 using System.Windows;
 
 namespace CadFilesUpdater.Windows
@@ -11,20 +12,32 @@ namespace CadFilesUpdater.Windows
 
         public void UpdateProgress(int processed, int total, string currentFile = null)
         {
-            Dispatcher.Invoke(() =>
+            // This method is now called from UI thread (via MainWindow's Dispatcher)
+            // So we can directly update UI elements
+            try
             {
-                ProgressBar.Maximum = total;
-                ProgressBar.Value = processed;
+                if (ProgressBar != null)
+                {
+                    ProgressBar.Maximum = total;
+                    ProgressBar.Value = processed;
+                }
                 
-                if (!string.IsNullOrEmpty(currentFile))
+                if (StatusText != null)
                 {
-                    StatusText.Text = $"Processing: {System.IO.Path.GetFileName(currentFile)} ({processed}/{total})";
+                    if (!string.IsNullOrEmpty(currentFile))
+                    {
+                        StatusText.Text = $"Processing: {System.IO.Path.GetFileName(currentFile)} ({processed}/{total})";
+                    }
+                    else
+                    {
+                        StatusText.Text = $"Processed: {processed}/{total}";
+                    }
                 }
-                else
-                {
-                    StatusText.Text = $"Processed: {processed}/{total}";
-                }
-            });
+            }
+            catch
+            {
+                // Ignore errors if window is being closed
+            }
         }
     }
 }

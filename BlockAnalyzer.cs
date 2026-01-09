@@ -27,7 +27,7 @@ namespace CadFilesUpdater
         public static List<BlockInfo> AnalyzeFiles(List<string> filePaths)
         {
             System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Rozpoczynam analizę {filePaths.Count} plików");
-            var allBlocks = new Dictionary<string, BlockInfo>();
+            var allBlocks = new List<BlockInfo>();
 
             foreach (var filePath in filePaths)
             {
@@ -37,29 +37,13 @@ namespace CadFilesUpdater
                     var blocks = AnalyzeFile(filePath);
                     System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Znaleziono {blocks.Count} bloków w pliku {System.IO.Path.GetFileName(filePath)}");
                     
+                    // Add all blocks from this file, preserving FilePath information
                     foreach (var block in blocks)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Blok: {block.BlockName}, Atrybuty: {string.Join(", ", block.Attributes)}");
-                        
-                        if (!allBlocks.ContainsKey(block.BlockName))
-                        {
-                            allBlocks[block.BlockName] = new BlockInfo
-                            {
-                                BlockName = block.BlockName,
-                                Attributes = new List<string>(block.Attributes)
-                            };
-                        }
-                        else
-                        {
-                            // Merge attributes
-                            foreach (var attr in block.Attributes)
-                            {
-                                if (!allBlocks[block.BlockName].Attributes.Contains(attr))
-                                {
-                                    allBlocks[block.BlockName].Attributes.Add(attr);
-                                }
-                            }
-                        }
+                        // Ensure FilePath is set
+                        block.FilePath = filePath;
+                        System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Blok: {block.BlockName}, Atrybuty: {string.Join(", ", block.Attributes)}, Plik: {System.IO.Path.GetFileName(filePath)}");
+                        allBlocks.Add(block);
                     }
                 }
                 catch (Exception ex)
@@ -69,8 +53,8 @@ namespace CadFilesUpdater
                 }
             }
 
-            System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Łącznie znaleziono {allBlocks.Count} unikalnych bloków");
-            return allBlocks.Values.ToList();
+            System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Łącznie znaleziono {allBlocks.Count} bloków (z wszystkich plików)");
+            return allBlocks;
         }
 
         private static List<BlockInfo> AnalyzeFile(string filePath)
@@ -242,7 +226,19 @@ namespace CadFilesUpdater
                 try
                 {
                     result.ProcessedFiles++;
-                    progressCallback?.Invoke(result.ProcessedFiles, result.TotalFiles, filePath);
+                    // Invoke callback on UI thread if it's provided
+                    if (progressCallback != null)
+                    {
+                        try
+                        {
+                            progressCallback(result.ProcessedFiles, result.TotalFiles, filePath);
+                        }
+                        catch (Exception callbackEx)
+                        {
+                            // Ignore callback errors (e.g., if window is closed)
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Callback error: {callbackEx.Message}");
+                        }
+                    }
                     
                     DwgVersion originalVersion = GetFileVersion(filePath);
                     

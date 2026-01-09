@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
@@ -15,12 +16,14 @@ namespace CadFilesUpdater.Windows
     public partial class MainWindow : Window
     {
         private List<string> _selectedFiles = new List<string>();
+        private ObservableCollection<string> _filePathsCollection = new ObservableCollection<string>();
         private List<BlockInfo> _allBlocks = new List<BlockInfo>();
         private List<BlockInfo> _filteredBlocks = new List<BlockInfo>();
         private List<string> _allAttributes = new List<string>();
         private List<string> _filteredAttributes = new List<string>();
         private string _selectedBlockName = null;
         private string _selectedAttributeName = null;
+        private List<string> _selectedFilesForFiltering = new List<string>(); // Currently selected files for filtering (empty = all files)
 
         public MainWindow()
         {
@@ -39,8 +42,41 @@ namespace CadFilesUpdater.Windows
             if (dialog.ShowDialog() == true)
             {
                 _selectedFiles = dialog.FileNames.ToList();
-                FilesListBox.ItemsSource = _selectedFiles.Select(f => System.IO.Path.GetFileName(f));
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Załadowano {_selectedFiles.Count} plików");
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Lista plików: {string.Join(", ", _selectedFiles.Select(f => System.IO.Path.GetFileName(f)))}");
+                
+                // Clear existing ItemsSource first
+                FilesListBox.ItemsSource = null;
+                FilesListBox.Items.Clear();
+                
+                // Clear and populate ObservableCollection with full paths (to avoid duplicates)
+                _filePathsCollection.Clear();
+                foreach (var filePath in _selectedFiles)
+                {
+                    _filePathsCollection.Add(filePath);
+                }
+                
+                // Set ItemsSource to ObservableCollection with full paths
+                FilesListBox.ItemsSource = _filePathsCollection;
                 FilesCountText.Text = $"{_selectedFiles.Count} file(s) selected";
+                _selectedFilesForFiltering.Clear(); // Reset selection - no files selected initially
+                
+                // Force refresh of ListBox
+                FilesListBox.UpdateLayout();
+                FilesListBox.InvalidateVisual();
+                
+                // Wait for UI to update and then check
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Ustawiono ItemsSource. Liczba elementów w FilesListBox: {FilesListBox.Items.Count}");
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Liczba elementów w ObservableCollection: {_filePathsCollection.Count}");
+                    
+                    // Verify all items are visible
+                    if (FilesListBox.Items.Count != _selectedFiles.Count)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] BŁĄD: Liczba elementów w ListBox ({FilesListBox.Items.Count}) nie zgadza się z liczbą plików ({_selectedFiles.Count})!");
+                    }
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
 
                 // Analyze files
                 try
@@ -48,9 +84,11 @@ namespace CadFilesUpdater.Windows
                     System.Diagnostics.Debug.WriteLine($"[MainWindow] Rozpoczynam analizę {_selectedFiles.Count} plików");
                     _allBlocks = BlockAnalyzer.AnalyzeFiles(_selectedFiles);
                     System.Diagnostics.Debug.WriteLine($"[MainWindow] Otrzymano {_allBlocks.Count} bloków z analizy");
-                    _filteredBlocks = _allBlocks.ToList();
-                    UpdateBlocksList();
-                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Zaktualizowano listę bloków. Liczba w liście: {BlocksListBox.Items.Count}");
+                    
+                    // On initial load, select all files to show all blocks
+                    FilesListBox.SelectAll();
+                    // This will trigger FilesListBox_SelectionChanged which will call ApplyFilters and UpdateBlocksList
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Zaznaczono wszystkie pliki na początku");
                     
                     if (_allBlocks.Count == 0)
                     {
@@ -66,48 +104,108 @@ namespace CadFilesUpdater.Windows
             }
         }
 
+        private void SelectAllFiles_Click(object sender, RoutedEventArgs e)
+        {
+            // Select all files in the list
+            FilesListBox.SelectAll();
+        }
+
+        private void UnselectAllFiles_Click(object sender, RoutedEventArgs e)
+        {
+            // Clear file selection - when no files are selected, show no blocks
+            FilesListBox.SelectedItems.Clear();
+            _selectedFilesForFiltering.Clear();
+            ApplyFilters();
+            UpdateBlocksList();
+        }
+
+        private void FilesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // Get all selected file paths (ItemsSource contains full paths now)
+            var selectedFilePaths = FilesListBox.SelectedItems.Cast<string>().ToList();
+            
+            // Use selected file paths directly
+            _selectedFilesForFiltering = selectedFilePaths;
+            
+            var selectedFileNames = selectedFilePaths.Select(f => System.IO.Path.GetFileName(f)).ToList();
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] Zaznaczono {_selectedFilesForFiltering.Count} plików: {string.Join(", ", selectedFileNames)}");
+            
+            // Clear attributes when file selection changes
+            BlocksListBox.SelectedItem = null;
+            _selectedBlockName = null;
+            _selectedAttributeName = null;
+            _allAttributes.Clear();
+            _filteredAttributes.Clear();
+            UpdateAttributesList();
+            AttributeSearchBox.IsEnabled = false;
+            AttributesListBox.IsEnabled = false;
+            AttributeSearchPlaceholder.Visibility = Visibility.Visible;
+            ValueTextBox.Text = "";
+            ValueTextBox.IsEnabled = false;
+            
+            // Re-apply filters with new file selection
+            ApplyFilters();
+            UpdateBlocksList();
+        }
+
         private void BlockSearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             // Show/hide placeholder based on text content
             BlockSearchPlaceholder.Visibility = string.IsNullOrEmpty(BlockSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
             
-            var searchText = BlockSearchBox.Text.ToLower();
-            System.Diagnostics.Debug.WriteLine($"[MainWindow] Wyszukiwanie bloków: '{searchText}' (wszystkich bloków: {_allBlocks.Count})");
+            // Re-apply filters (includes search text)
+            ApplyFilters();
+            UpdateBlocksList();
+        }
+
+        private void ApplyFilters()
+        {
+            // Start with all blocks
+            var filtered = _allBlocks.ToList();
             
-            // Temporarily unsubscribe from SelectionChanged to avoid triggering during filtering
-            BlocksListBox.SelectionChanged -= BlocksListBox_SelectionChanged;
+            // Filter: only blocks with at least one attribute
+            filtered = filtered.Where(b => b.Attributes != null && b.Attributes.Count > 0).ToList();
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] Po filtrowaniu bloków z atrybutami: {filtered.Count} bloków");
             
-            try
+            // Filter: by selected files (if files are selected)
+            // If no files are selected, show no blocks (empty list)
+            if (_selectedFilesForFiltering != null && _selectedFilesForFiltering.Count > 0)
             {
-                if (string.IsNullOrWhiteSpace(searchText))
-                {
-                    _filteredBlocks = _allBlocks.ToList();
-                }
-                else
-                {
-                    _filteredBlocks = _allBlocks
-                        .Where(b => b.BlockName.ToLower().Contains(searchText))
-                        .ToList();
-                }
-                
-                System.Diagnostics.Debug.WriteLine($"[MainWindow] Znaleziono {_filteredBlocks.Count} bloków pasujących do '{searchText}'");
-                
-                // Clear selection before updating
-                BlocksListBox.SelectedItem = null;
-                _selectedBlockName = null;
-                _allAttributes.Clear();
-                _filteredAttributes.Clear();
-                UpdateAttributesList();
-                AttributeSearchBox.IsEnabled = false;
-                AttributesListBox.IsEnabled = false;
-                
-                UpdateBlocksList();
+                filtered = filtered.Where(b => 
+                    b.FilePath != null && 
+                    _selectedFilesForFiltering.Any(selectedFile => 
+                        b.FilePath.Equals(selectedFile, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Po filtrowaniu po {_selectedFilesForFiltering.Count} plikach: {filtered.Count} bloków");
             }
-            finally
+            else
             {
-                // Re-subscribe to SelectionChanged
-                BlocksListBox.SelectionChanged += BlocksListBox_SelectionChanged;
+                // No files selected - show no blocks
+                filtered.Clear();
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Brak zaznaczonych plików - lista bloków pusta");
             }
+            
+            // Filter: by search text (if search box has text)
+            var searchText = BlockSearchBox.Text?.ToLower();
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                filtered = filtered.Where(b => b.BlockName.ToLower().Contains(searchText)).ToList();
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Po filtrowaniu po tekście '{searchText}': {filtered.Count} bloków");
+            }
+            
+            _filteredBlocks = filtered;
+            
+            // Clear selection when filters change - this also clears attributes
+            BlocksListBox.SelectedItem = null;
+            _selectedBlockName = null;
+            _selectedAttributeName = null;
+            _allAttributes.Clear();
+            _filteredAttributes.Clear();
+            UpdateAttributesList();
+            AttributeSearchBox.IsEnabled = false;
+            AttributesListBox.IsEnabled = false;
+            ValueTextBox.Text = "";
+            ValueTextBox.IsEnabled = false;
         }
 
         private void BlockSearchBox_GotFocus(object sender, RoutedEventArgs e)
@@ -122,18 +220,42 @@ namespace CadFilesUpdater.Windows
 
         private void UpdateBlocksList()
         {
-            var blockNames = _filteredBlocks.Select(b => b.BlockName).OrderBy(n => n).ToList();
-            System.Diagnostics.Debug.WriteLine($"[MainWindow] Aktualizuję listę bloków. Liczba: {blockNames.Count}");
+            // Get unique block names (blocks can appear in multiple files, but we want unique names)
+            var blockNames = _filteredBlocks
+                .Select(b => b.BlockName)
+                .Distinct()
+                .OrderBy(n => n)
+                .ToList();
             
-            // Completely clear selection and items source to prevent index mismatch
-            BlocksListBox.SelectedIndex = -1;
-            BlocksListBox.SelectedItem = null;
-            BlocksListBox.ItemsSource = null;
-            BlocksListBox.UpdateLayout();
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] Aktualizuję listę bloków. Liczba unikalnych nazw: {blockNames.Count} (z {_filteredBlocks.Count} bloków)");
             
-            // Set new ItemsSource
-            BlocksListBox.ItemsSource = blockNames;
-            System.Diagnostics.Debug.WriteLine($"[MainWindow] Ustawiono ItemsSource. Liczba elementów: {BlocksListBox.Items.Count}");
+            // Temporarily unsubscribe to prevent SelectionChanged during update
+            BlocksListBox.SelectionChanged -= BlocksListBox_SelectionChanged;
+            
+            try
+            {
+                // Completely clear selection and items source to prevent index mismatch
+                BlocksListBox.SelectedIndex = -1;
+                BlocksListBox.SelectedItem = null;
+                BlocksListBox.ItemsSource = null;
+                BlocksListBox.UpdateLayout();
+                
+                // Set new ItemsSource
+                BlocksListBox.ItemsSource = blockNames;
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Ustawiono ItemsSource. Liczba elementów w BlocksListBox: {BlocksListBox.Items.Count}");
+                
+                // If there's only one block, automatically select it
+                if (blockNames.Count == 1)
+                {
+                    BlocksListBox.SelectedItem = blockNames[0];
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Automatycznie zaznaczono jedyny dostępny blok: {blockNames[0]}");
+                }
+            }
+            finally
+            {
+                // Re-subscribe to SelectionChanged
+                BlocksListBox.SelectionChanged += BlocksListBox_SelectionChanged;
+            }
         }
 
         private void BlocksListBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -205,7 +327,7 @@ namespace CadFilesUpdater.Windows
 
         private void BlocksListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            // This can be called with null e when called manually from MouseLeftButtonDown
+            // This can be called with null e when called manually from PreviewMouseLeftButtonDown
             System.Diagnostics.Debug.WriteLine($"[MainWindow] SelectionChanged: SelectedIndex={BlocksListBox.SelectedIndex}, SelectedItem={BlocksListBox.SelectedItem}");
             
             if (BlocksListBox.SelectedItem != null)
@@ -213,9 +335,25 @@ namespace CadFilesUpdater.Windows
                 _selectedBlockName = BlocksListBox.SelectedItem.ToString();
                 System.Diagnostics.Debug.WriteLine($"[MainWindow] Wybrano blok: '{_selectedBlockName}' (indeks: {BlocksListBox.SelectedIndex})");
                 
-                var selectedBlock = _allBlocks.FirstOrDefault(b => b.BlockName == _selectedBlockName);
+                // Find block - if files are selected, prefer blocks from those files, otherwise take first match
+                BlockInfo selectedBlock = null;
+                if (_selectedFilesForFiltering != null && _selectedFilesForFiltering.Count > 0)
+                {
+                    // Find block from selected files first
+                    selectedBlock = _allBlocks.FirstOrDefault(b => 
+                        b.BlockName == _selectedBlockName && 
+                        b.FilePath != null && 
+                        _selectedFilesForFiltering.Any(selectedFile => 
+                            b.FilePath.Equals(selectedFile, StringComparison.OrdinalIgnoreCase)));
+                }
                 
-                if (selectedBlock != null)
+                // If not found or no files selected, take first match from all blocks
+                if (selectedBlock == null)
+                {
+                    selectedBlock = _allBlocks.FirstOrDefault(b => b.BlockName == _selectedBlockName);
+                }
+                
+                if (selectedBlock != null && selectedBlock.Attributes != null && selectedBlock.Attributes.Count > 0)
                 {
                     _allAttributes = selectedBlock.Attributes.OrderBy(a => a).ToList();
                     _filteredAttributes = _allAttributes.ToList();
@@ -224,10 +362,22 @@ namespace CadFilesUpdater.Windows
                     AttributesListBox.IsEnabled = true;
                     // Show placeholder when field is enabled and empty
                     AttributeSearchPlaceholder.Visibility = string.IsNullOrEmpty(AttributeSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+                    // ValueTextBox remains disabled until attribute is selected
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"[MainWindow] BŁĄD: Nie znaleziono bloku '{_selectedBlockName}' w _allBlocks!");
+                    // No block selected or block has no attributes - clear everything
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Brak zaznaczonego bloku lub blok bez atrybutów");
+                    _selectedBlockName = null;
+                    _selectedAttributeName = null;
+                    _allAttributes.Clear();
+                    _filteredAttributes.Clear();
+                    UpdateAttributesList();
+                    AttributeSearchBox.IsEnabled = false;
+                    AttributesListBox.IsEnabled = false;
+                    AttributeSearchPlaceholder.Visibility = Visibility.Visible;
+                    ValueTextBox.Text = "";
+                    ValueTextBox.IsEnabled = false;
                 }
             }
             else
@@ -332,6 +482,9 @@ namespace CadFilesUpdater.Windows
 
                 SubmitButton.IsEnabled = false;
 
+                // Store reference to progress window for use in background thread
+                var progressWindowRef = progressWindow;
+                
                 // Run update in background task
                 Task.Run(() =>
                 {
@@ -344,57 +497,123 @@ namespace CadFilesUpdater.Windows
                             ValueTextBox.Text,
                             (processed, total, currentFile) =>
                             {
-                                progressWindow.UpdateProgress(processed, total, currentFile);
+                                // Update progress window using MainWindow's Dispatcher
+                                // This ensures we're on the UI thread before accessing the window
+                                // DO NOT access progressWindowRef properties from background thread!
+                                Dispatcher.BeginInvoke(new Action(() =>
+                                {
+                                    try
+                                    {
+                                        // Check IsLoaded INSIDE Dispatcher callback (on UI thread)
+                                        if (progressWindowRef != null && progressWindowRef.IsLoaded)
+                                        {
+                                            progressWindowRef.UpdateProgress(processed, total, currentFile);
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        // Log error but don't crash
+                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error updating progress: {ex.Message}");
+                                    }
+                                }), System.Windows.Threading.DispatcherPriority.Normal);
                             });
 
+                        // IMPORTANT: Copy all data from updateResult to local variables BEFORE Dispatcher.BeginInvoke
+                        // This ensures thread safety - we're copying primitive types and strings, not UI objects
+                        var totalFiles = updateResult.TotalFiles;
+                        var successfulFiles = updateResult.SuccessfulFiles;
+                        var failedFiles = updateResult.FailedFiles;
+                        var errors = updateResult.Errors.Select(error => new { 
+                            FilePath = error.FilePath, 
+                            ErrorMessage = error.ErrorMessage 
+                        }).ToList(); // Create anonymous objects with copied strings
+                        
                         // Close progress window and show results on UI thread
-                        Dispatcher.Invoke(() =>
+                        Dispatcher.BeginInvoke(new Action(() =>
                         {
-                            progressWindow.Close();
-                            SubmitButton.IsEnabled = true;
-
-                            string message = $"Operation completed!\n\n";
-                            message += $"Successfully processed: {updateResult.SuccessfulFiles}/{updateResult.TotalFiles} file(s)\n";
-                            
-                            if (updateResult.FailedFiles > 0)
+                            try
                             {
-                                message += $"\nFailed: {updateResult.FailedFiles} file(s)\n\n";
-                                message += "Files with errors:\n";
-                                
-                                foreach (var error in updateResult.Errors)
+                                if (progressWindowRef != null)
                                 {
-                                    var fileName = System.IO.Path.GetFileName(error.FilePath);
-                                    message += $"  • {fileName}: {error.ErrorMessage}\n";
+                                    progressWindowRef.Close();
                                 }
+                                SubmitButton.IsEnabled = true;
+
+                                string message = $"Operation completed!\n\n";
+                                message += $"Successfully processed: {successfulFiles}/{totalFiles} file(s)\n";
                                 
-                                MessageBox.Show(
-                                    message,
-                                    updateResult.SuccessfulFiles > 0 ? "Completed with errors" : "Error",
-                                    MessageBoxButton.OK,
-                                    updateResult.SuccessfulFiles > 0 ? MessageBoxImage.Warning : MessageBoxImage.Error);
+                                if (failedFiles > 0)
+                                {
+                                    message += $"\nFailed: {failedFiles} file(s)\n\n";
+                                    message += "Files that could not be processed:\n";
+                                    
+                                    // Simply list file names - don't try to access error details that might cause thread issues
+                                    foreach (var error in errors)
+                                    {
+                                        try
+                                        {
+                                            var fileName = System.IO.Path.GetFileName(error.FilePath);
+                                            message += $"  • {fileName}\n";
+                                        }
+                                        catch
+                                        {
+                                            // If we can't get filename, just skip this entry
+                                        }
+                                    }
+                                    
+                                    MessageBox.Show(
+                                        message,
+                                        successfulFiles > 0 ? "Completed with errors" : "Error",
+                                        MessageBoxButton.OK,
+                                        successfulFiles > 0 ? MessageBoxImage.Warning : MessageBoxImage.Error);
+                                }
+                                else
+                                {
+                                    MessageBox.Show(
+                                        message,
+                                        "Success",
+                                        MessageBoxButton.OK,
+                                        MessageBoxImage.Information);
+                                }
                             }
-                            else
+                            catch (Exception uiEx)
                             {
+                                // Fallback error handling
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Error showing results: {uiEx.Message}");
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {uiEx.StackTrace}");
                                 MessageBox.Show(
-                                    message,
-                                    "Success",
+                                    $"Error displaying results: {uiEx.Message}",
+                                    "Error",
                                     MessageBoxButton.OK,
-                                    MessageBoxImage.Information);
+                                    MessageBoxImage.Error);
                             }
-                        });
+                        }), System.Windows.Threading.DispatcherPriority.Normal);
                     }
                     catch (Exception ex)
                     {
-                        Dispatcher.Invoke(() =>
+                        // Copy exception message to local variable before Dispatcher.BeginInvoke
+                        var errorMessage = ex.Message;
+                        
+                        Dispatcher.BeginInvoke(new Action(() =>
                         {
-                            progressWindow.Close();
-                            SubmitButton.IsEnabled = true;
-                            MessageBox.Show(
-                                $"Error during update: {ex.Message}",
-                                "Error",
-                                MessageBoxButton.OK,
-                                MessageBoxImage.Error);
-                        });
+                            try
+                            {
+                                if (progressWindowRef != null)
+                                {
+                                    progressWindowRef.Close();
+                                }
+                                SubmitButton.IsEnabled = true;
+                                MessageBox.Show(
+                                    $"Error during update: {errorMessage}",
+                                    "Error",
+                                    MessageBoxButton.OK,
+                                    MessageBoxImage.Error);
+                            }
+                            catch
+                            {
+                                // Ignore if window is already closed
+                            }
+                        }), System.Windows.Threading.DispatcherPriority.Normal);
                     }
                 });
             }
