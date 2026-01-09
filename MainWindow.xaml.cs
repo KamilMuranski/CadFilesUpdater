@@ -142,8 +142,10 @@ namespace CadFilesUpdater.Windows
             AttributeSearchBox.IsEnabled = false;
             AttributesListBox.IsEnabled = false;
             AttributeSearchPlaceholder.Visibility = Visibility.Visible;
-            ValueTextBox.Text = "";
-            ValueTextBox.IsEnabled = false;
+            // DON'T clear ValueTextBox - user wants to keep the value
+            // DON'T disable ValueTextBox - it should always be enabled
+            // Only disable Submit button when needed
+            UpdateSubmitButtonState();
             
             // Re-apply filters with new file selection
             ApplyFilters();
@@ -207,8 +209,9 @@ namespace CadFilesUpdater.Windows
             UpdateAttributesList();
             AttributeSearchBox.IsEnabled = false;
             AttributesListBox.IsEnabled = false;
-            ValueTextBox.Text = "";
-            ValueTextBox.IsEnabled = false;
+            // DON'T clear ValueTextBox - user wants to keep the value
+            // DON'T disable ValueTextBox - it should always be enabled
+            UpdateSubmitButtonState();
         }
 
         private void BlockSearchBox_GotFocus(object sender, RoutedEventArgs e)
@@ -269,8 +272,9 @@ namespace CadFilesUpdater.Windows
                     AttributeSearchBox.IsEnabled = false;
                     AttributesListBox.IsEnabled = false;
                     AttributeSearchPlaceholder.Visibility = Visibility.Visible;
-                    ValueTextBox.Text = "";
-                    ValueTextBox.IsEnabled = false;
+                    // DON'T clear ValueTextBox - user wants to keep the value
+                    // DON'T disable ValueTextBox - it should always be enabled
+                    UpdateSubmitButtonState();
                 }
             }
         }
@@ -393,8 +397,9 @@ namespace CadFilesUpdater.Windows
                     AttributeSearchBox.IsEnabled = false;
                     AttributesListBox.IsEnabled = false;
                     AttributeSearchPlaceholder.Visibility = Visibility.Visible;
-                    ValueTextBox.Text = "";
-                    ValueTextBox.IsEnabled = false;
+                    // DON'T clear ValueTextBox - user wants to keep the value
+                    // DON'T disable ValueTextBox - it should always be enabled
+                    UpdateSubmitButtonState();
                 }
             }
             else
@@ -406,10 +411,10 @@ namespace CadFilesUpdater.Windows
                 UpdateAttributesList();
                 AttributeSearchBox.IsEnabled = false;
                 AttributesListBox.IsEnabled = false;
-                ValueTextBox.IsEnabled = false;
-                SubmitButton.IsEnabled = false;
                 // Hide placeholder when field is disabled
                 AttributeSearchPlaceholder.Visibility = Visibility.Collapsed;
+                // DON'T disable ValueTextBox - it should always be enabled
+                UpdateSubmitButtonState();
             }
         }
 
@@ -452,21 +457,35 @@ namespace CadFilesUpdater.Windows
             if (AttributesListBox.SelectedItem != null)
             {
                 _selectedAttributeName = AttributesListBox.SelectedItem.ToString();
-                ValueTextBox.IsEnabled = true;
-                SubmitButton.IsEnabled = !string.IsNullOrWhiteSpace(ValueTextBox.Text);
+                // ValueTextBox is always enabled - don't change it
+                UpdateSubmitButtonState();
             }
             else
             {
                 _selectedAttributeName = null;
-                ValueTextBox.IsEnabled = false;
-                SubmitButton.IsEnabled = false;
+                // ValueTextBox is always enabled - don't change it
+                UpdateSubmitButtonState();
             }
         }
 
         private void ValueTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
-            SubmitButton.IsEnabled = !string.IsNullOrWhiteSpace(ValueTextBox.Text) && 
-                                     !string.IsNullOrEmpty(_selectedAttributeName);
+            UpdateSubmitButtonState();
+        }
+
+        private void UpdateSubmitButtonState()
+        {
+            // Submit button is enabled only when:
+            // 1. Block is selected
+            // 2. Attribute is selected
+            // 3. Value text is not empty
+            bool canSubmit = !string.IsNullOrWhiteSpace(_selectedBlockName) &&
+                           !string.IsNullOrWhiteSpace(_selectedAttributeName) &&
+                           !string.IsNullOrWhiteSpace(ValueTextBox.Text);
+            
+            SubmitButton.IsEnabled = canSubmit;
+            // ValueTextBox is always enabled - user can type at any time
+            ValueTextBox.IsEnabled = true;
         }
 
         private void SubmitButton_Click(object sender, RoutedEventArgs e)
@@ -480,24 +499,58 @@ namespace CadFilesUpdater.Windows
                 return;
             }
 
+            // IMPORTANT: Copy UI values and compute the *actual* processing file list BEFORE confirmation.
+            // The user may select 14 files, but only a subset contains the selected block.
+            var originallySelectedFiles = _selectedFiles.ToList();
+            var selectedBlockName = _selectedBlockName;
+            var selectedAttributeName = _selectedAttributeName;
+            var valueText = ValueTextBox.Text;
+
+            var selectedFiles = originallySelectedFiles;
+
+            var selectedBlockFamily = BlockAnalyzer.GetBlockFamilyName(selectedBlockName);
+            var filesContainingBlock = _allBlocks
+                .Where(b => b != null &&
+                            !string.IsNullOrEmpty(b.BlockName) &&
+                            BlockAnalyzer.GetBlockFamilyName(b.BlockName).Equals(selectedBlockFamily, StringComparison.OrdinalIgnoreCase) &&
+                            !string.IsNullOrEmpty(b.FilePath))
+                .Select(b => b.FilePath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (filesContainingBlock.Count > 0)
+            {
+                selectedFiles = selectedFiles
+                    .Where(f => filesContainingBlock.Contains(f, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] Copied values on UI thread: {selectedFiles.Count} files, block: {selectedBlockName}, attribute: {selectedAttributeName}, value: {valueText}");
+
+            if (selectedFiles.Count == 0)
+            {
+                MessageBox.Show(
+                    $"None of the selected files contain the block '{selectedBlockName}'. Nothing to update.",
+                    "Nothing to do",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            var confirmText =
+                $"Are you sure you want to update all blocks '{selectedBlockName}' " +
+                $"with attribute '{selectedAttributeName}' to value '{valueText}'?\n\n" +
+                $"Selected files: {originallySelectedFiles.Count}\n" +
+                $"Will be processed (contain this block): {selectedFiles.Count}";
+
             var result = MessageBox.Show(
-                $"Are you sure you want to update all blocks '{_selectedBlockName}' " +
-                $"with attribute '{_selectedAttributeName}' to value '{ValueTextBox.Text}' " +
-                $"in {_selectedFiles.Count} file(s)?",
+                confirmText,
                 "Confirm operation",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
 
             if (result == MessageBoxResult.Yes)
             {
-                // IMPORTANT: Copy all UI values to local variables BEFORE Task.Run
-                // This ensures we're not accessing UI objects from background thread
-                var selectedFiles = _selectedFiles.ToList(); // Create copy
-                var selectedBlockName = _selectedBlockName;
-                var selectedAttributeName = _selectedAttributeName;
-                var valueText = ValueTextBox.Text; // Copy text BEFORE Task.Run
-                
-                System.Diagnostics.Debug.WriteLine($"[MainWindow] Copied values on UI thread: {selectedFiles.Count} files, block: {selectedBlockName}, attribute: {selectedAttributeName}, value: {valueText}");
                 
                 // Show progress window
                 var progressWindow = new ProgressWindow
@@ -510,81 +563,48 @@ namespace CadFilesUpdater.Windows
 
                 // Store reference to progress window for use in background thread
                 var progressWindowRef = progressWindow;
+
+                // Capture counts for final message (user may select 14 files, but we process only those containing the block family)
+                var selectedFilesCount = originallySelectedFiles.Count;
+                var willProcessCount = selectedFiles.Count;
+                var selectedBlockFamilyForMessage = selectedBlockFamily;
                 
-                // Run update in background task
-                System.Diagnostics.Debug.WriteLine($"[MainWindow] Starting Task.Run on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-                Task.Run(() =>
+                // IMPORTANT:
+                // We must run AutoCAD operations (DocumentManager.Open / Editor.Command) on AutoCAD's UI thread.
+                // Running in Task.Run can cause cross-thread WPF exceptions and even crash AutoCAD.
+                try
                 {
-                    try
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Task.Run started on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
-                        
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Copied values: {selectedFiles.Count} files, block: {selectedBlockName}, attribute: {selectedAttributeName}");
-                        
-                        var updateResult = BlockAnalyzer.UpdateBlocksInFiles(
-                            selectedFiles,
-                            selectedBlockName,
-                            selectedAttributeName,
-                            valueText,
-                            (processed, total, currentFile) =>
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Running update on UI thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+
+                    var updateResult = BlockAnalyzer.UpdateBlocksInFiles(
+                        selectedFiles,
+                        selectedBlockName,
+                        selectedAttributeName,
+                        valueText,
+                        (processed, total, currentFile) =>
+                        {
+                            var proc = processed;
+                            var tot = total;
+                            var file = currentFile ?? "";
+
+                            if (progressWindowRef != null && progressWindowRef.Dispatcher != null)
                             {
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Progress callback called on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}, processed: {processed}/{total}");
-                                
-                                // Update progress window - must use the window's own Dispatcher
-                                // Store values in local variables for thread safety
-                                var proc = processed;
-                                var tot = total;
-                                var file = currentFile ?? "";
-                                
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Progress callback: proc={proc}, tot={tot}, file={file}");
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
-                                
-                                // DO NOT access IsLoaded or any UI properties from background thread!
-                                // Just try to invoke through Dispatcher - let the callback check IsLoaded
-                                if (progressWindowRef != null && progressWindowRef.Dispatcher != null)
+                                if (progressWindowRef.Dispatcher.CheckAccess())
                                 {
-                                    try
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling Dispatcher.BeginInvoke from thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-                                        progressWindowRef.Dispatcher.BeginInvoke(new Action(() =>
-                                        {
-                                            try
-                                            {
-                                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Inside Dispatcher callback on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-                                                // Check IsLoaded INSIDE Dispatcher callback (on UI thread)
-                                                if (progressWindowRef != null && progressWindowRef.IsLoaded)
-                                                {
-                                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling UpdateProgress: {proc}/{tot}, file: {file}");
-                                                    progressWindowRef.UpdateProgress(proc, tot, file);
-                                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] UpdateProgress completed");
-                                                }
-                                                else
-                                                {
-                                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Progress window not loaded, skipping UpdateProgress");
-                                                }
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                // Log error but don't crash
-                                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Error in Dispatcher callback: {ex.Message}");
-                                                System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {ex.StackTrace}");
-                                            }
-                                        }), System.Windows.Threading.DispatcherPriority.Normal);
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher.BeginInvoke called successfully");
-                                    }
-                                    catch (Exception dispatcherEx)
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error invoking Dispatcher: {dispatcherEx.Message}");
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher Exception StackTrace: {dispatcherEx.StackTrace}");
-                                    }
+                                    if (progressWindowRef.IsLoaded) progressWindowRef.UpdateProgress(proc, tot, file);
                                 }
                                 else
                                 {
-                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef or Dispatcher is null, cannot update progress");
+                                    progressWindowRef.Dispatcher.BeginInvoke(new Action(() =>
+                                    {
+                                        if (progressWindowRef != null && progressWindowRef.IsLoaded)
+                                        {
+                                            progressWindowRef.UpdateProgress(proc, tot, file);
+                                        }
+                                    }), System.Windows.Threading.DispatcherPriority.Background);
                                 }
-                            });
+                            }
+                        });
                         
                         System.Diagnostics.Debug.WriteLine($"[MainWindow] UpdateBlocksInFiles completed. Result: {updateResult.SuccessfulFiles}/{updateResult.TotalFiles} successful, {updateResult.FailedFiles} failed");
 
@@ -620,8 +640,22 @@ namespace CadFilesUpdater.Windows
                                         }
                                         SubmitButton.IsEnabled = true;
 
+                                        // Ensure result dialog is visible (MessageBox without owner can appear behind AutoCAD).
+                                        try
+                                        {
+                                            if (this.WindowState == WindowState.Minimized)
+                                                this.WindowState = WindowState.Normal;
+                                            this.Activate();
+                                            this.Topmost = true;   // bring to front
+                                            this.Topmost = false;  // reset
+                                            this.Focus();
+                                        }
+                                        catch { }
+
                                         string message = $"Operation completed!\n\n";
-                                        message += $"Successfully processed: {successfulFiles}/{totalFiles} file(s)\n";
+                                        message += $"Selected files: {selectedFilesCount}\n";
+                                        message += $"Processed (contain block family '{selectedBlockFamilyForMessage}'): {totalFiles}/{willProcessCount} file(s)\n";
+                                        message += $"Succeeded: {successfulFiles}/{totalFiles} file(s)\n";
 
                                         if (failedFiles > 0)
                                         {
@@ -642,7 +676,9 @@ namespace CadFilesUpdater.Windows
                                                 }
                                             }
 
+                                            System.Diagnostics.Debug.WriteLine("[MainWindow] Showing result MessageBox (completed with errors)");
                                             MessageBox.Show(
+                                                this,
                                                 message,
                                                 successfulFiles > 0 ? "Completed with errors" : "Error",
                                                 MessageBoxButton.OK,
@@ -650,7 +686,9 @@ namespace CadFilesUpdater.Windows
                                         }
                                         else
                                         {
+                                            System.Diagnostics.Debug.WriteLine("[MainWindow] Showing result MessageBox (success)");
                                             MessageBox.Show(
+                                                this,
                                                 message,
                                                 "Success",
                                                 MessageBoxButton.OK,
@@ -663,6 +701,7 @@ namespace CadFilesUpdater.Windows
                                         System.Diagnostics.Debug.WriteLine($"[MainWindow] Error showing results: {uiEx.Message}");
                                         System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {uiEx.StackTrace}");
                                         MessageBox.Show(
+                                            this,
                                             $"Error displaying results: {uiEx.Message}",
                                             "Error",
                                             MessageBoxButton.OK,
@@ -679,62 +718,16 @@ namespace CadFilesUpdater.Windows
                             System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
                             System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
                         }
-                    }
-                    catch (Exception ex)
+                }
+                catch (Exception ex)
+                {
+                    if (progressWindowRef != null)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Exception in Task.Run: {ex.Message}");
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Exception type: {ex.GetType().FullName}");
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] StackTrace: {ex.StackTrace}");
-                        
-                        // Copy exception message to local variable before Dispatcher.BeginInvoke
-                        var errorMessage = ex.Message ?? "Unknown error";
-                        
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef is null: {progressWindowRef == null}");
-                        System.Diagnostics.Debug.WriteLine($"[MainWindow] progressWindowRef.Dispatcher is null: {progressWindowRef?.Dispatcher == null}");
-                        
-                        // Use the window's Dispatcher for thread safety
-                        if (progressWindowRef != null && progressWindowRef.Dispatcher != null)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[MainWindow] Calling Dispatcher.BeginInvoke for error on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-                            try
-                            {
-                                progressWindowRef.Dispatcher.BeginInvoke(new Action(() =>
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"[MainWindow] Inside error Dispatcher callback on thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-                                    try
-                                    {
-                                        if (progressWindowRef != null)
-                                        {
-                                            progressWindowRef.Close();
-                                        }
-                                        SubmitButton.IsEnabled = true;
-                                        MessageBox.Show(
-                                            $"Error during update: {errorMessage}",
-                                            "Error",
-                                            MessageBoxButton.OK,
-                                            MessageBoxImage.Error);
-                                    }
-                                    catch (Exception innerEx)
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Error in error handler: {innerEx.Message}");
-                                        System.Diagnostics.Debug.WriteLine($"[MainWindow] Inner exception StackTrace: {innerEx.StackTrace}");
-                                        // Ignore if window is already closed
-                                    }
-                                }), System.Windows.Threading.DispatcherPriority.Normal);
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher.BeginInvoke for error called successfully");
-                            }
-                            catch (Exception dispatcherEx)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Error calling Dispatcher.BeginInvoke for error: {dispatcherEx.Message}");
-                                System.Diagnostics.Debug.WriteLine($"[MainWindow] Dispatcher exception StackTrace: {dispatcherEx.StackTrace}");
-                            }
-                        }
-                        else
-                        {
-                            System.Diagnostics.Debug.WriteLine("[MainWindow] Dispatcher not available for showing error");
-                        }
+                        try { progressWindowRef.Close(); } catch { }
                     }
-                });
+                    SubmitButton.IsEnabled = true;
+                    MessageBox.Show($"Error during update: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
     }

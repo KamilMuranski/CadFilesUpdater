@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.ApplicationServices.Core;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -24,6 +26,23 @@ namespace CadFilesUpdater
 
     public class BlockAnalyzer
     {
+        // NOTE: AutoCAD operations must run on AutoCAD UI thread. We no longer marshal via ExecuteInApplicationContext
+        // from a background thread because that caused cross-thread WPF exceptions / crashes in AutoCAD 2021.
+
+        // NOTE:
+        // In AutoCAD 2021, calling Editor.Command (QSAVE/ATTSYNC) from a modeless WPF UI event handler can throw
+        // eInvalidInput. Therefore we avoid command-based save/sync and use API equivalents instead.
+
+        public static string GetBlockFamilyName(string blockName)
+        {
+            if (string.IsNullOrWhiteSpace(blockName)) return "";
+
+            // Treat dynamic block variants like "NAME_1", "NAME_10" as the same family "NAME"
+            // (only when the suffix is an underscore followed by digits).
+            var m = Regex.Match(blockName, @"^(.*)_\d+$");
+            return m.Success ? m.Groups[1].Value : blockName;
+        }
+
         public static List<BlockInfo> AnalyzeFiles(List<string> filePaths)
         {
             System.Diagnostics.Debug.WriteLine($"[BlockAnalyzer] Rozpoczynam analizę {filePaths.Count} plików");
@@ -221,6 +240,8 @@ namespace CadFilesUpdater
                 TotalFiles = filePaths.Count
             };
 
+            var targetFamily = GetBlockFamilyName(blockName);
+
             foreach (var filePath in filePaths)
             {
                 try
@@ -251,57 +272,164 @@ namespace CadFilesUpdater
                         System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] progressCallback is null, skipping");
                     }
                     
-                    DwgVersion originalVersion = GetFileVersion(filePath);
-                    
-                    using (var db = new Database(false, true))
+                    bool fileSucceeded = false;
+                    bool updatedInFile = false;
+                    string fileError = null;
+
+                    try
                     {
-                        db.ReadDwgFile(filePath, FileOpenMode.OpenForReadAndAllShare, false, null);
+                        var dm = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
+                        Document openedDoc = null;
+                        Document previousDoc = null;
+                        bool docWasAlreadyOpen = false;
 
-                        using (var tr = db.TransactionManager.StartTransaction())
+                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Opening document on UI thread: {filePath}");
+
+                        previousDoc = dm.MdiActiveDocument;
+
+                        // Detect if document is already open to avoid closing the user's drawing.
+                        try
                         {
-                            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-                            bool updated = false;
-
-                            // Update blocks in Model Space
-                            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-                            bool msUpdated = UpdateBlocksInBlockTableRecord(tr, db, ms, blockName, attributeName, value);
-                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Model Space updated: {msUpdated}");
-                            updated |= msUpdated;
-
-                            // Update blocks in all layouts (Paper Space)
-                            var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
-                            if (layoutDict != null)
+                            var normalizedFilePath = System.IO.Path.GetFullPath(filePath);
+                            foreach (Document d in dm)
                             {
-                                foreach (DBDictionaryEntry entry in layoutDict)
+                                try
                                 {
-                                    var layout = tr.GetObject(entry.Value, OpenMode.ForRead) as Layout;
-                                    if (layout != null && layout.LayoutName != "Model")
+                                    var docPath = d.Database?.Filename;
+                                    if (!string.IsNullOrEmpty(docPath) &&
+                                        string.Equals(System.IO.Path.GetFullPath(docPath), normalizedFilePath, StringComparison.OrdinalIgnoreCase))
                                     {
-                                        var ps = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
-                                        bool psUpdated = UpdateBlocksInBlockTableRecord(tr, db, ps, blockName, attributeName, value);
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Layout '{layout.LayoutName}' updated: {psUpdated}");
-                                        updated |= psUpdated;
+                                        openedDoc = d;
+                                        docWasAlreadyOpen = true;
+                                        break;
                                     }
                                 }
+                                catch { }
                             }
+                        }
+                        catch { }
 
-                            tr.Commit();
-                            
-                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Transaction committed. updated={updated}");
-                            
-                            if (updated)
+                        if (openedDoc == null)
+                        {
+                            openedDoc = dm.Open(filePath, false);
+                        }
+                        if (openedDoc == null)
+                        {
+                            fileError = "Failed to open document";
+                            fileSucceeded = false;
+                        }
+                        else
+                        {
+                            try { dm.MdiActiveDocument = openedDoc; } catch { }
+
+                            // 1) DB edits must be inside DocumentLock + Transaction
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] About to LockDocument (for DB edits): {filePath}");
+                            using (openedDoc.LockDocument())
+                            using (var tr = openedDoc.Database.TransactionManager.StartTransaction())
                             {
-                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Saving file: {filePath}");
-                                db.SaveAs(filePath, originalVersion);
-                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] File saved successfully: {filePath}");
+                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Locked + Transaction started: {filePath}");
+                                var bt = (BlockTable)tr.GetObject(openedDoc.Database.BlockTableId, OpenMode.ForRead);
+                                updatedInFile = false;
+
+                                // Model space
+                                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                                updatedInFile |= UpdateBlocksInBlockTableRecord(tr, openedDoc.Database, ms, blockName, attributeName, value);
+
+                                // Paper space layouts
+                                var layoutDict = (DBDictionary)tr.GetObject(openedDoc.Database.LayoutDictionaryId, OpenMode.ForRead);
+                                if (layoutDict != null)
+                                {
+                                    foreach (DBDictionaryEntry entry in layoutDict)
+                                    {
+                                        var layout = tr.GetObject(entry.Value, OpenMode.ForRead) as Layout;
+                                        if (layout != null && layout.LayoutName != "Model")
+                                        {
+                                            var ps = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
+                                            updatedInFile |= UpdateBlocksInBlockTableRecord(tr, openedDoc.Database, ps, blockName, attributeName, value);
+                                        }
+                                    }
+                                }
+
+                                tr.Commit();
+                            } // release DocumentLock BEFORE running commands
+
+                            if (updatedInFile)
+                            {
+                                // We already re-sync the modified AttributeReference from AttributeDefinition using
+                                // SetAttributeFromBlock + AdjustAlignment inside UpdateBlocksInBlockTableRecord.
+                                // That is the API equivalent of ATTSYNC for the changed attributes, without relying
+                                // on the command system (which is unstable here).
+                                try { openedDoc.Editor.Regen(); } catch { }
+
+                                // Save reliably:
+                                // - If we opened the doc, CloseAndSave uses AutoCAD's save pipeline (stable).
+                                // - If doc was already open, we do NOT close it; saving automatically is risky here,
+                                //   so we leave it open and report success (changes are in-memory).
+                                if (!docWasAlreadyOpen)
+                                {
+                                    try
+                                    {
+                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] CloseAndSave: {filePath}");
+                                        openedDoc.CloseAndSave(filePath);
+                                        openedDoc = null; // it's closed now
+                                        fileSucceeded = true; // IMPORTANT: mark success after successful save
+                                    }
+                                    catch (Exception saveEx)
+                                    {
+                                        fileError = $"Save failed: {saveEx.GetType().Name}: {saveEx.Message}";
+                                        fileSucceeded = false;
+                                    }
+                                }
+                                else
+                                {
+                                    // Best-effort: leave document open; user can save normally.
+                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Document already open; leaving it open for user to save: {filePath}");
+                                    fileSucceeded = true;
+                                }
                             }
                             else
                             {
-                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] No changes made to file: {filePath}, skipping SaveAs");
+                                fileSucceeded = true; // nothing to change, but no error
                             }
-                            
-                            result.SuccessfulFiles++;
+
+                            // Close only if we opened it in this run AND didn't already CloseAndSave.
+                            try
+                            {
+                                if (openedDoc != null && !docWasAlreadyOpen)
+                                {
+                                    openedDoc.CloseAndDiscard();
+                                }
+                            }
+                            catch { }
+
+                            try
+                            {
+                                if (previousDoc != null)
+                                {
+                                    dm.MdiActiveDocument = previousDoc;
+                                }
+                            }
+                            catch { }
                         }
+                    }
+                    catch (System.Exception exOuter)
+                    {
+                        fileError = exOuter.Message;
+                    }
+
+                    if (!fileSucceeded)
+                    {
+                        var msg = string.IsNullOrWhiteSpace(fileError) ? "Failed to update file" : fileError;
+                        result.Errors.Add(new FileError(filePath, msg));
+                        result.FailedFiles++;
+                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] ERROR: {filePath}: {msg}");
+                    }
+                    else
+                    {
+                        // We count the file as successful even if no blocks matched (no changes),
+                        // since the operation completed without errors.
+                        result.SuccessfulFiles++;
+                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Completed {filePath}. updated={updatedInFile}");
                     }
                 }
                 catch (System.IO.IOException ioEx)
@@ -340,6 +468,7 @@ namespace CadFilesUpdater
         private static bool UpdateBlocksInBlockTableRecord(Transaction tr, Database db, BlockTableRecord btr, string blockName, string attributeName, string value)
         {
             bool updated = false;
+            var targetFamily = GetBlockFamilyName(blockName);
 
             foreach (ObjectId entId in btr)
             {
@@ -352,7 +481,8 @@ namespace CadFilesUpdater
                         if (dynamicBtrId.IsValid)
                         {
                             var dynamicBtr = tr.GetObject(dynamicBtrId, OpenMode.ForRead) as BlockTableRecord;
-                            if (dynamicBtr != null && dynamicBtr.Name.Equals(blockName, StringComparison.OrdinalIgnoreCase))
+                            if (dynamicBtr != null &&
+                                GetBlockFamilyName(dynamicBtr.Name).Equals(targetFamily, StringComparison.OrdinalIgnoreCase))
                             {
                                 foreach (ObjectId attId in br.AttributeCollection)
                                 {
@@ -394,90 +524,118 @@ namespace CadFilesUpdater
                                             hasAlignmentPoint = false;
                                             System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   AlignmentPoint: N/A (left-aligned)");
                                         }
-                                        
-                                        // Restore formatting properties
-                                        attRef.Justify = originalJustify;
-                                        attRef.Height = originalHeight;
-                                        attRef.WidthFactor = originalWidthFactor;
-                                        attRef.Rotation = originalRotation;
-                                        attRef.IsMirroredInX = originalIsMirroredInX;
-                                        attRef.IsMirroredInY = originalIsMirroredInY;
-                                        
-                                        // Change the text - this is the only change we want
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Changing TextString from '{originalText}' to '{value}'");
-                                        attRef.TextString = value;
-                                        
-                                        // For centered text, we need to manually recalculate Position
-                                        // because AutoCAD doesn't do it automatically when TextString changes
-                                        if (hasAlignmentPoint)
+
+                                        // Apply new value and then re-sync attribute reference from the AttributeDefinition.
+                                        // This mimics what happens when you "toggle justification" in Block Editor / ATTSYNC:
+                                        // AutoCAD re-applies the AttributeDefinition geometry to the AttributeReference, which fixes the visual centering.
+                                        Database oldDb = HostApplicationServices.WorkingDatabase;
+                                        HostApplicationServices.WorkingDatabase = db;
+
+                                        try
                                         {
-                                            // Store original WorkingDatabase and set it to current db
-                                            Database oldDb = HostApplicationServices.WorkingDatabase;
-                                            HostApplicationServices.WorkingDatabase = db;
-                                            
+                                            var isMTextAttribute = false;
                                             try
                                             {
-                                                // Restore AlignmentPoint first
-                                                attRef.AlignmentPoint = originalAlignmentPoint;
-                                                
-                                                // Use AdjustAlignment with WorkingDatabase set
-                                                attRef.AdjustAlignment(db);
-                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Called AdjustAlignment with WorkingDatabase set");
-                                                
-                                                // Check if Position was recalculated
-                                                var positionAfterAdjust = attRef.Position;
-                                                var positionDelta = Math.Abs(positionAfterAdjust.X - originalPosition.X) + 
-                                                                    Math.Abs(positionAfterAdjust.Y - originalPosition.Y);
-                                                
-                                                if (positionDelta < 0.0001)
+                                                isMTextAttribute = attRef.IsMTextAttribute;
+                                            }
+                                            catch
+                                            {
+                                                // older objects / edge cases
+                                            }
+
+                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   IsMTextAttribute={isMTextAttribute}");
+
+                                            // 1) Change the value
+                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Changing TextString from '{originalText}' to '{value}'");
+                                            attRef.TextString = value;
+
+                                            // 2) Find matching AttributeDefinition (by tag) in the *dynamic* block definition
+                                            AttributeDefinition matchingAttDef = null;
+                                            foreach (ObjectId defId in dynamicBtr)
+                                            {
+                                                var defEnt = tr.GetObject(defId, OpenMode.ForRead) as Entity;
+                                                if (defEnt is AttributeDefinition ad &&
+                                                    ad.Tag.Equals(attributeName, StringComparison.OrdinalIgnoreCase))
                                                 {
-                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] AdjustAlignment didn't recalculate Position, trying manual calculation");
-                                                    
-                                                    // Manual calculation: Use TextStyle to estimate text width
+                                                    matchingAttDef = ad;
+                                                    break;
+                                                }
+                                            }
+
+                                            if (matchingAttDef != null)
+                                            {
+                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Found AttributeDefinition for tag '{attributeName}'. Re-syncing AttributeReference from definition...");
+
+                                                try
+                                                {
+                                                    // Helpful diagnostics: where does the definition place this attribute?
+                                                    // (Definition coords are in block space; transform into current space)
+                                                    var defPos = matchingAttDef.Position;
+                                                    Point3d defAlign = Point3d.Origin;
+                                                    bool defHasAlign = false;
                                                     try
                                                     {
-                                                        var textStyleId = attRef.TextStyleId;
-                                                        var textStyle = tr.GetObject(textStyleId, OpenMode.ForRead) as TextStyleTableRecord;
-                                                        
-                                                        // Calculate approximate text width
-                                                        // Width = char_count * char_width_factor * height * widthFactor
-                                                        // For standard fonts, average char width is about 0.6-0.7 of height
-                                                        double avgCharWidth = originalHeight * 0.65; // Approximate
-                                                        double textWidth = (value?.Length ?? 0) * avgCharWidth * originalWidthFactor;
-                                                        double halfWidth = textWidth / 2.0;
-                                                        
-                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Estimated text width: {textWidth} (chars: {value?.Length ?? 0}, charWidth: {avgCharWidth}, halfWidth: {halfWidth})");
-                                                        
-                                                        // Calculate Position offset for BaseCenter
-                                                        // Position = AlignmentPoint - (halfWidth) in text direction
-                                                        double angleRad = originalRotation;
-                                                        double deltaX = -halfWidth * Math.Cos(angleRad);
-                                                        double deltaY = -halfWidth * Math.Sin(angleRad);
-                                                        
-                                                        Point3d calculatedPosition = new Point3d(
-                                                            originalAlignmentPoint.X + deltaX,
-                                                            originalAlignmentPoint.Y + deltaY,
-                                                            originalAlignmentPoint.Z
-                                                        );
-                                                        
-                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Calculated Position: {calculatedPosition} (from AlignmentPoint {originalAlignmentPoint}, offset: {deltaX}, {deltaY})");
-                                                        
-                                                        attRef.Position = calculatedPosition;
+                                                        defAlign = matchingAttDef.AlignmentPoint;
+                                                        defHasAlign = true;
                                                     }
-                                                    catch (Exception ex2)
+                                                    catch { }
+
+                                                    var defPosWcs = defPos.TransformBy(br.BlockTransform);
+                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Def.Position(block)={defPos} -> world={defPosWcs}");
+                                                    if (defHasAlign)
                                                     {
-                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Manual calculation failed: {ex2.Message}");
+                                                        var defAlignWcs = defAlign.TransformBy(br.BlockTransform);
+                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Def.AlignmentPoint(block)={defAlign} -> world={defAlignWcs}");
                                                     }
                                                 }
-                                                else
+                                                catch { }
+
+                                                // 3) Sync geometry/justification/alignment from definition (ATTSYNC-style)
+                                                attRef.SetAttributeFromBlock(matchingAttDef, br.BlockTransform);
+
+                                                // 4) Set the value again (SetAttributeFromBlock may restore default text)
+                                                attRef.TextString = value;
+
+                                                // 4b) For MText attributes, TextString updates a backing MText object.
+                                                // In "side database" mode this often needs an explicit refresh.
+                                                if (isMTextAttribute)
                                                 {
-                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Position was recalculated by AdjustAlignment: {positionAfterAdjust}");
+                                                    try
+                                                    {
+                                                        attRef.UpdateMTextAttribute();
+                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Updated MTextAttribute representation");
+                                                    }
+                                                    catch (Exception exMText)
+                                                    {
+                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] WARNING: UpdateMTextAttribute failed: {exMText.Message}");
+                                                    }
                                                 }
+
+                                                // 5) Force alignment calculation
+                                                // IMPORTANT: do NOT restore the previous AlignmentPoint here.
+                                                // The old AlignmentPoint may already be "broken" (left-anchored-at-center symptom).
+                                                // We want the definition geometry to fully take effect.
+                                                attRef.AdjustAlignment(db);
+                                                try { attRef.RecordGraphicsModified(true); } catch { }
+                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Re-sync + AdjustAlignment done.");
+
+                                                // Post-sync diagnostics
+                                                try
+                                                {
+                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Ref.Justify(after)={attRef.Justify}");
+                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Ref.Position(after)={attRef.Position}");
+                                                    try { System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Ref.AlignmentPoint(after)={attRef.AlignmentPoint}"); } catch { }
+                                                }
+                                                catch { }
                                             }
-                                            finally
+                                            else
                                             {
-                                                HostApplicationServices.WorkingDatabase = oldDb;
+                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] WARNING: Could not find AttributeDefinition for tag '{attributeName}' in dynamic block definition. Skipping re-sync.");
                                             }
+                                        }
+                                        finally
+                                        {
+                                            HostApplicationServices.WorkingDatabase = oldDb;
                                         }
                                         
                                         // Immediately after text change, check what changed
@@ -517,7 +675,21 @@ namespace CadFilesUpdater
                                                     if (textLengthDiff != 0)
                                                     {
                                                         System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Text length changed by {textLengthDiff} characters");
-                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position should be recalculated but wasn't!");
+                                                        
+                                                        // If Position already changed, the re-sync did its job.
+                                                        var posDx = Math.Abs(afterPosition.X - originalPosition.X);
+                                                        var posDy = Math.Abs(afterPosition.Y - originalPosition.Y);
+                                                        var posDz = Math.Abs(afterPosition.Z - originalPosition.Z);
+                                                        var positionChanged = posDx > 0.0001 || posDy > 0.0001 || posDz > 0.0001;
+                                                        
+                                                        if (positionChanged)
+                                                        {
+                                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position was recalculated (delta: X={posDx}, Y={posDy}, Z={posDz})");
+                                                        }
+                                                        else
+                                                        {
+                                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   WARNING: Position did not change even though text length changed");
+                                                        }
                                                         
                                                         // Try to manually recalculate Position
                                                         // For BaseCenter, Position = AlignmentPoint - (text_width / 2)

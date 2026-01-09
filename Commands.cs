@@ -10,7 +10,8 @@ namespace CadFilesUpdater
 {
     public class Commands
     {
-        [CommandMethod("CadFilesUpdater", "UpdateAttributesInFiles", CommandFlags.Modal | CommandFlags.NoActionRecording)]
+        // NOTE: Must be a Session command because we may open/switch documents during processing.
+        [CommandMethod("CadFilesUpdater", "UpdateAttributesInFiles", CommandFlags.Session | CommandFlags.NoActionRecording)]
         public void UpdateAttributesInFiles()
         {
             try
