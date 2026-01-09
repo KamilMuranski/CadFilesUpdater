@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.Win32;
 using CadFilesUpdater;
 
@@ -64,6 +66,9 @@ namespace CadFilesUpdater.Windows
 
         private void BlockSearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            // Show/hide placeholder based on text content
+            BlockSearchPlaceholder.Visibility = string.IsNullOrEmpty(BlockSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+            
             var searchText = BlockSearchBox.Text.ToLower();
             System.Diagnostics.Debug.WriteLine($"[MainWindow] Wyszukiwanie bloków: '{searchText}' (wszystkich bloków: {_allBlocks.Count})");
             
@@ -103,22 +108,109 @@ namespace CadFilesUpdater.Windows
             }
         }
 
+        private void BlockSearchBox_GotFocus(object sender, RoutedEventArgs e)
+        {
+            BlockSearchPlaceholder.Visibility = Visibility.Collapsed;
+        }
+
+        private void BlockSearchBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            BlockSearchPlaceholder.Visibility = string.IsNullOrEmpty(BlockSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
         private void UpdateBlocksList()
         {
             var blockNames = _filteredBlocks.Select(b => b.BlockName).OrderBy(n => n).ToList();
             System.Diagnostics.Debug.WriteLine($"[MainWindow] Aktualizuję listę bloków. Liczba: {blockNames.Count}");
             
-            // Clear selection before updating ItemsSource to prevent index mismatch
+            // Completely clear selection and items source to prevent index mismatch
+            BlocksListBox.SelectedIndex = -1;
             BlocksListBox.SelectedItem = null;
             BlocksListBox.ItemsSource = null;
+            BlocksListBox.UpdateLayout();
+            
+            // Set new ItemsSource
             BlocksListBox.ItemsSource = blockNames;
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] Ustawiono ItemsSource. Liczba elementów: {BlocksListBox.Items.Count}");
+        }
+
+        private void BlocksListBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            var listBox = sender as ListBox;
+            if (listBox != null)
+            {
+                // Get the mouse position relative to the ListBox
+                var point = e.GetPosition(listBox);
+                
+                // Use HitTest to find the element at mouse position
+                var hitResult = VisualTreeHelper.HitTest(listBox, point);
+                if (hitResult != null && hitResult.VisualHit != null)
+                {
+                    // Walk up the visual tree to find the ListBoxItem container
+                    DependencyObject container = hitResult.VisualHit;
+                    ListBoxItem clickedItem = null;
+                    
+                    while (container != null && container != listBox)
+                    {
+                        if (container is ListBoxItem item)
+                        {
+                            clickedItem = item;
+                            break;
+                        }
+                        container = VisualTreeHelper.GetParent(container);
+                    }
+                    
+                    if (clickedItem != null)
+                    {
+                        var clickedIndex = listBox.ItemContainerGenerator.IndexFromContainer(clickedItem);
+                        System.Diagnostics.Debug.WriteLine($"[MainWindow] PreviewMouseLeftButtonDown: Kliknięto indeks {clickedIndex}, punkt=({point.X:F1}, {point.Y:F1})");
+                        
+                        if (clickedIndex >= 0 && clickedIndex < listBox.Items.Count)
+                        {
+                            // Temporarily unsubscribe to prevent SelectionChanged from firing with wrong index
+                            listBox.SelectionChanged -= BlocksListBox_SelectionChanged;
+                            
+                            try
+                            {
+                                // Directly set the selection to the clicked item BEFORE default behavior
+                                listBox.SelectedIndex = clickedIndex;
+                                var selectedItem = listBox.SelectedItem;
+                                System.Diagnostics.Debug.WriteLine($"[MainWindow] PreviewMouseLeftButtonDown: Ustawiono SelectedIndex={clickedIndex}, SelectedItem={selectedItem}");
+                                
+                                // Manually trigger the selection changed handler
+                                if (selectedItem != null)
+                                {
+                                    BlocksListBox_SelectionChanged(listBox, null);
+                                }
+                            }
+                            finally
+                            {
+                                // Re-subscribe to SelectionChanged after a delay to let selection settle
+                                Dispatcher.BeginInvoke(new Action(() =>
+                                {
+                                    listBox.SelectionChanged += BlocksListBox_SelectionChanged;
+                                }), System.Windows.Threading.DispatcherPriority.Input);
+                            }
+                            
+                            // Mark event as handled to prevent default selection behavior
+                            e.Handled = true;
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
         private void BlocksListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            // This can be called with null e when called manually from MouseLeftButtonDown
+            System.Diagnostics.Debug.WriteLine($"[MainWindow] SelectionChanged: SelectedIndex={BlocksListBox.SelectedIndex}, SelectedItem={BlocksListBox.SelectedItem}");
+            
             if (BlocksListBox.SelectedItem != null)
             {
                 _selectedBlockName = BlocksListBox.SelectedItem.ToString();
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Wybrano blok: '{_selectedBlockName}' (indeks: {BlocksListBox.SelectedIndex})");
+                
                 var selectedBlock = _allBlocks.FirstOrDefault(b => b.BlockName == _selectedBlockName);
                 
                 if (selectedBlock != null)
@@ -128,10 +220,17 @@ namespace CadFilesUpdater.Windows
                     UpdateAttributesList();
                     AttributeSearchBox.IsEnabled = true;
                     AttributesListBox.IsEnabled = true;
+                    // Show placeholder when field is enabled and empty
+                    AttributeSearchPlaceholder.Visibility = string.IsNullOrEmpty(AttributeSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"[MainWindow] BŁĄD: Nie znaleziono bloku '{_selectedBlockName}' w _allBlocks!");
                 }
             }
             else
             {
+                System.Diagnostics.Debug.WriteLine($"[MainWindow] Brak zaznaczenia");
                 _selectedBlockName = null;
                 _allAttributes.Clear();
                 _filteredAttributes.Clear();
@@ -140,11 +239,16 @@ namespace CadFilesUpdater.Windows
                 AttributesListBox.IsEnabled = false;
                 ValueTextBox.IsEnabled = false;
                 SubmitButton.IsEnabled = false;
+                // Hide placeholder when field is disabled
+                AttributeSearchPlaceholder.Visibility = Visibility.Collapsed;
             }
         }
 
         private void AttributeSearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            // Show/hide placeholder based on text content
+            AttributeSearchPlaceholder.Visibility = string.IsNullOrEmpty(AttributeSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
+            
             var searchText = AttributeSearchBox.Text.ToLower();
             if (string.IsNullOrWhiteSpace(searchText))
             {
@@ -157,6 +261,16 @@ namespace CadFilesUpdater.Windows
                     .ToList();
             }
             UpdateAttributesList();
+        }
+
+        private void AttributeSearchBox_GotFocus(object sender, RoutedEventArgs e)
+        {
+            AttributeSearchPlaceholder.Visibility = Visibility.Collapsed;
+        }
+
+        private void AttributeSearchBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            AttributeSearchPlaceholder.Visibility = string.IsNullOrEmpty(AttributeSearchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void UpdateAttributesList()

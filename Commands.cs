@@ -16,16 +16,20 @@ namespace CadFilesUpdater
             try
             {
                 var mainWindow = new MainWindow();
+                
+                // Show window first
                 mainWindow.Show();
+                mainWindow.WindowState = WindowState.Normal;
                 
                 // Force window to front using Windows API
                 var helper = new WindowInteropHelper(mainWindow);
                 helper.EnsureHandle();
-                SetWindowPos(helper.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
+                // Use HWND_TOP to bring to front (not permanently forcing, but ensures visibility)
+                SetWindowPos(helper.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002); // SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
                 
+                // Activate and focus
                 mainWindow.Activate();
                 mainWindow.Focus();
-                mainWindow.WindowState = WindowState.Normal;
                 mainWindow.BringIntoView();
             }
             catch (System.Exception ex)

@@ -33,12 +33,26 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <TextBox x:Name="BlockSearchBox" Grid.Row="0" 
-                     TextChanged="BlockSearchBox_TextChanged"
-                     Margin="0,0,0,5" Padding="5"
-                     FontSize="14"/>
+            <Grid Grid.Row="0" Margin="0,0,0,5">
+                <TextBox x:Name="BlockSearchBox" 
+                         TextChanged="BlockSearchBox_TextChanged"
+                         GotFocus="BlockSearchBox_GotFocus"
+                         LostFocus="BlockSearchBox_LostFocus"
+                         Padding="5"
+                         FontSize="14"/>
+                <TextBlock x:Name="BlockSearchPlaceholder" 
+                           Text="Search here..."
+                           Foreground="Gray"
+                           IsHitTestVisible="False"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Left"
+                           Margin="10,0,0,0"
+                           FontSize="14"
+                           Visibility="Visible"/>
+            </Grid>
             <ListBox x:Name="BlocksListBox" Grid.Row="1" 
                      SelectionChanged="BlocksListBox_SelectionChanged"
+                     PreviewMouseLeftButtonDown="BlocksListBox_PreviewMouseLeftButtonDown"
                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
                      ScrollViewer.VerticalScrollBarVisibility="Auto"/>
         </Grid>
@@ -50,10 +64,23 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            <TextBox x:Name="AttributeSearchBox" Grid.Row="0" 
-                     TextChanged="AttributeSearchBox_TextChanged"
-                     Margin="0,0,0,5" Padding="5"
-                     FontSize="14" IsEnabled="False"/>
+            <Grid Grid.Row="0" Margin="0,0,0,5">
+                <TextBox x:Name="AttributeSearchBox" 
+                         TextChanged="AttributeSearchBox_TextChanged"
+                         GotFocus="AttributeSearchBox_GotFocus"
+                         LostFocus="AttributeSearchBox_LostFocus"
+                         Padding="5"
+                         FontSize="14" IsEnabled="False"/>
+                <TextBlock x:Name="AttributeSearchPlaceholder" 
+                           Text="Search here..."
+                           Foreground="Gray"
+                           IsHitTestVisible="False"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Left"
+                           Margin="10,0,0,0"
+                           FontSize="14"
+                           Visibility="Visible"/>
+            </Grid>
             <ListBox x:Name="AttributesListBox" Grid.Row="1" 
                      SelectionChanged="AttributesListBox_SelectionChanged"
                      MaxHeight="150"
