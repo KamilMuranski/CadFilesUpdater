@@ -507,12 +507,11 @@ namespace CadFilesUpdater.Windows
             var valueText = ValueTextBox.Text;
 
             var selectedFiles = originallySelectedFiles;
-
-            var selectedBlockFamily = BlockAnalyzer.GetBlockFamilyName(selectedBlockName);
+            var selectedBlockForMatch = selectedBlockName;
             var filesContainingBlock = _allBlocks
                 .Where(b => b != null &&
                             !string.IsNullOrEmpty(b.BlockName) &&
-                            BlockAnalyzer.GetBlockFamilyName(b.BlockName).Equals(selectedBlockFamily, StringComparison.OrdinalIgnoreCase) &&
+                            b.BlockName.Equals(selectedBlockForMatch, StringComparison.OrdinalIgnoreCase) &&
                             !string.IsNullOrEmpty(b.FilePath))
                 .Select(b => b.FilePath)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -541,7 +540,7 @@ namespace CadFilesUpdater.Windows
                 $"Are you sure you want to update all blocks '{selectedBlockName}' " +
                 $"with attribute '{selectedAttributeName}' to value '{valueText}'?\n\n" +
                 $"Selected files: {originallySelectedFiles.Count}\n" +
-                $"Will be processed (contain this block): {selectedFiles.Count}";
+                $"Will be processed (contain block '{selectedBlockForMatch}'): {selectedFiles.Count}";
 
             var result = MessageBox.Show(
                 confirmText,
@@ -567,7 +566,7 @@ namespace CadFilesUpdater.Windows
                 // Capture counts for final message (user may select 14 files, but we process only those containing the block family)
                 var selectedFilesCount = originallySelectedFiles.Count;
                 var willProcessCount = selectedFiles.Count;
-                var selectedBlockFamilyForMessage = selectedBlockFamily;
+                var selectedBlockForMessage = selectedBlockForMatch;
                 
                 // IMPORTANT:
                 // We must run AutoCAD operations (DocumentManager.Open / Editor.Command) on AutoCAD's UI thread.
@@ -654,7 +653,7 @@ namespace CadFilesUpdater.Windows
 
                                         string message = $"Operation completed!\n\n";
                                         message += $"Selected files: {selectedFilesCount}\n";
-                                        message += $"Processed (contain block family '{selectedBlockFamilyForMessage}'): {totalFiles}/{willProcessCount} file(s)\n";
+                                        message += $"Processed (contain block '{selectedBlockForMessage}'): {totalFiles}/{willProcessCount} file(s)\n";
                                         message += $"Succeeded: {successfulFiles}/{totalFiles} file(s)\n";
 
                                         if (failedFiles > 0)

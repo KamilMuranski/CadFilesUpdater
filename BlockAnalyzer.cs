@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.ApplicationServices.Core;
@@ -32,16 +31,6 @@ namespace CadFilesUpdater
         // NOTE:
         // In AutoCAD 2021, calling Editor.Command (QSAVE/ATTSYNC) from a modeless WPF UI event handler can throw
         // eInvalidInput. Therefore we avoid command-based save/sync and use API equivalents instead.
-
-        public static string GetBlockFamilyName(string blockName)
-        {
-            if (string.IsNullOrWhiteSpace(blockName)) return "";
-
-            // Treat dynamic block variants like "NAME_1", "NAME_10" as the same family "NAME"
-            // (only when the suffix is an underscore followed by digits).
-            var m = Regex.Match(blockName, @"^(.*)_\d+$");
-            return m.Success ? m.Groups[1].Value : blockName;
-        }
 
         public static List<BlockInfo> AnalyzeFiles(List<string> filePaths)
         {
@@ -233,14 +222,17 @@ namespace CadFilesUpdater
             }
         }
 
-        public static UpdateResult UpdateBlocksInFiles(List<string> filePaths, string blockName, string attributeName, string value, System.Action<int, int, string> progressCallback = null)
+        public static UpdateResult UpdateBlocksInFiles(
+            List<string> filePaths,
+            string blockName,
+            string attributeName,
+            string value,
+            System.Action<int, int, string> progressCallback = null)
         {
             var result = new UpdateResult
             {
                 TotalFiles = filePaths.Count
             };
-
-            var targetFamily = GetBlockFamilyName(blockName);
 
             foreach (var filePath in filePaths)
             {
@@ -468,7 +460,6 @@ namespace CadFilesUpdater
         private static bool UpdateBlocksInBlockTableRecord(Transaction tr, Database db, BlockTableRecord btr, string blockName, string attributeName, string value)
         {
             bool updated = false;
-            var targetFamily = GetBlockFamilyName(blockName);
 
             foreach (ObjectId entId in btr)
             {
@@ -482,7 +473,7 @@ namespace CadFilesUpdater
                         {
                             var dynamicBtr = tr.GetObject(dynamicBtrId, OpenMode.ForRead) as BlockTableRecord;
                             if (dynamicBtr != null &&
-                                GetBlockFamilyName(dynamicBtr.Name).Equals(targetFamily, StringComparison.OrdinalIgnoreCase))
+                                dynamicBtr.Name.Equals(blockName, StringComparison.OrdinalIgnoreCase))
                             {
                                 foreach (ObjectId attId in br.AttributeCollection)
                                 {
