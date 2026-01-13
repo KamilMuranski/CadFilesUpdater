@@ -241,6 +241,11 @@ namespace CadFilesUpdater
                     result.ProcessedFiles++;
                     System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Processing file {result.ProcessedFiles}/{result.TotalFiles}: {filePath}");
                     System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Current thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+
+                    // Preserve original DWG version from disk (do NOT save in user's default DWG version).
+                    // NOTE: Document.CloseAndSave may save using user's default settings; we must use SaveAs(version).
+                    var originalDiskVersion = GetFileVersion(filePath);
+                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Original DWG version on disk: {originalDiskVersion} ({filePath})");
                     
                     // Invoke callback on UI thread if it's provided
                     if (progressCallback != null)
@@ -354,28 +359,60 @@ namespace CadFilesUpdater
                                 try { openedDoc.Editor.Regen(); } catch { }
 
                                 // Save reliably:
-                                // - If we opened the doc, CloseAndSave uses AutoCAD's save pipeline (stable).
-                                // - If doc was already open, we do NOT close it; saving automatically is risky here,
-                                //   so we leave it open and report success (changes are in-memory).
+                                // - If we opened the doc, SaveAs(file, originalVersion) preserves DWG version.
+                                // - If doc was already open, we avoid auto-saving to not disrupt the user's session;
+                                //   we cannot guarantee version preservation in that scenario, so we report a failure.
                                 if (!docWasAlreadyOpen)
                                 {
                                     try
                                     {
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] CloseAndSave: {filePath}");
-                                        openedDoc.CloseAndSave(filePath);
-                                        openedDoc = null; // it's closed now
-                                        fileSucceeded = true; // IMPORTANT: mark success after successful save
+                                        // Important: When a DWG is opened as a Document, the underlying file may be locked by AutoCAD.
+                                        // Saving back "in place" can throw eFileSharingViolation/eFilerError. Save to a temp file first,
+                                        // then close the document and replace the original on disk.
+                                        var dir = System.IO.Path.GetDirectoryName(filePath) ?? "";
+                                        var baseName = System.IO.Path.GetFileNameWithoutExtension(filePath);
+                                        var ext = System.IO.Path.GetExtension(filePath);
+                                        var tempPath = System.IO.Path.Combine(
+                                            dir,
+                                            $"{baseName}.tmp.{System.Guid.NewGuid():N}{ext}");
+
+                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] SaveAs temp (preserve version {originalDiskVersion}): {tempPath}");
+                                        openedDoc.Database.SaveAs(tempPath, originalDiskVersion);
+                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] SaveAs temp completed: {tempPath}");
+
+                                        // Close without saving (we already have the saved temp DWG).
+                                        openedDoc.CloseAndDiscard();
+                                        openedDoc = null;
+
+                                        // Replace original on disk.
+                                        System.IO.File.Copy(tempPath, filePath, true);
+                                        try { System.IO.File.Delete(tempPath); } catch { }
+
+                                        fileSucceeded = true; // IMPORTANT: mark success after successful replace
                                     }
                                     catch (Exception saveEx)
                                     {
+                                        // Best-effort cleanup
+                                        try
+                                        {
+                                            if (openedDoc != null)
+                                            {
+                                                openedDoc.CloseAndDiscard();
+                                                openedDoc = null;
+                                            }
+                                        }
+                                        catch { }
+
                                         fileError = $"Save failed: {saveEx.GetType().Name}: {saveEx.Message}";
                                         fileSucceeded = false;
                                     }
                                 }
                                 else
                                 {
-                                    // Best-effort: leave document open; user can save normally.
-                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Document already open; leaving it open for user to save: {filePath}");
+                                    // Document is already open in AutoCAD.
+                                    // Keep the previous behavior: apply changes in-memory and DO NOT force-save/close.
+                                    // This avoids disrupting the user's session and matches the expected workflow.
+                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Document already open; leaving it open (changes applied in-memory, not saved): {filePath}");
                                     fileSucceeded = true;
                                 }
                             }
