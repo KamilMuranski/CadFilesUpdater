@@ -241,11 +241,6 @@ namespace CadFilesUpdater
                     result.ProcessedFiles++;
                     System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Processing file {result.ProcessedFiles}/{result.TotalFiles}: {filePath}");
                     System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Current thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
-
-                    // Preserve original DWG version from disk (do NOT save in user's default DWG version).
-                    // NOTE: Document.CloseAndSave may save using user's default settings; we must use SaveAs(version).
-                    var originalDiskVersion = GetFileVersion(filePath);
-                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Original DWG version on disk: {originalDiskVersion} ({filePath})");
                     
                     // Invoke callback on UI thread if it's provided
                     if (progressCallback != null)
@@ -275,170 +270,60 @@ namespace CadFilesUpdater
 
                     try
                     {
-                        var dm = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
-                        Document openedDoc = null;
-                        Document previousDoc = null;
-                        bool docWasAlreadyOpen = false;
-
-                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Opening document on UI thread: {filePath}");
-
-                        previousDoc = dm.MdiActiveDocument;
-
-                        // Detect if document is already open to avoid closing the user's drawing.
-                        try
+                        // OFFLINE / SIDE DATABASE MODE:
+                        // We do not open/switch AutoCAD documents and we cannot run commands (MOVE/ATTSYNC/REGEN).
+                        // We directly edit the DWG database and save it back preserving the original DWG version.
+                        using (var db = new Database(false, true))
                         {
-                            var normalizedFilePath = System.IO.Path.GetFullPath(filePath);
-                            foreach (Document d in dm)
+                            db.ReadDwgFile(filePath, FileOpenMode.OpenForReadAndAllShare, false, null);
+                            db.CloseInput(true);
+
+                            var originalVersion = db.OriginalFileVersion;
+                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Original DWG version on disk: {originalVersion} ({filePath})");
+
+                            Database oldDb = HostApplicationServices.WorkingDatabase;
+                            HostApplicationServices.WorkingDatabase = db;
+                            try
                             {
-                                try
+                                using (var tr = db.TransactionManager.StartTransaction())
                                 {
-                                    var docPath = d.Database?.Filename;
-                                    if (!string.IsNullOrEmpty(docPath) &&
-                                        string.Equals(System.IO.Path.GetFullPath(docPath), normalizedFilePath, StringComparison.OrdinalIgnoreCase))
+                                    var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                                    updatedInFile = false;
+
+                                    // Model space
+                                    var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                                    updatedInFile |= UpdateBlocksInBlockTableRecord(tr, db, ms, blockName, attributeName, value);
+
+                                    // Paper space layouts
+                                    var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                                    if (layoutDict != null)
                                     {
-                                        openedDoc = d;
-                                        docWasAlreadyOpen = true;
-                                        break;
-                                    }
-                                }
-                                catch { }
-                            }
-                        }
-                        catch { }
-
-                        if (openedDoc == null)
-                        {
-                            openedDoc = dm.Open(filePath, false);
-                        }
-                        if (openedDoc == null)
-                        {
-                            fileError = "Failed to open document";
-                            fileSucceeded = false;
-                        }
-                        else
-                        {
-                            try { dm.MdiActiveDocument = openedDoc; } catch { }
-
-                            // 1) DB edits must be inside DocumentLock + Transaction
-                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] About to LockDocument (for DB edits): {filePath}");
-                            using (openedDoc.LockDocument())
-                            using (var tr = openedDoc.Database.TransactionManager.StartTransaction())
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Locked + Transaction started: {filePath}");
-                                var bt = (BlockTable)tr.GetObject(openedDoc.Database.BlockTableId, OpenMode.ForRead);
-                                updatedInFile = false;
-
-                                // Model space
-                                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-                                updatedInFile |= UpdateBlocksInBlockTableRecord(tr, openedDoc.Database, ms, blockName, attributeName, value);
-
-                                // Paper space layouts
-                                var layoutDict = (DBDictionary)tr.GetObject(openedDoc.Database.LayoutDictionaryId, OpenMode.ForRead);
-                                if (layoutDict != null)
-                                {
-                                    foreach (DBDictionaryEntry entry in layoutDict)
-                                    {
-                                        var layout = tr.GetObject(entry.Value, OpenMode.ForRead) as Layout;
-                                        if (layout != null && layout.LayoutName != "Model")
+                                        foreach (DBDictionaryEntry entry in layoutDict)
                                         {
-                                            var ps = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
-                                            updatedInFile |= UpdateBlocksInBlockTableRecord(tr, openedDoc.Database, ps, blockName, attributeName, value);
+                                            var layout = tr.GetObject(entry.Value, OpenMode.ForRead) as Layout;
+                                            if (layout != null && layout.LayoutName != "Model")
+                                            {
+                                                var ps = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForWrite);
+                                                updatedInFile |= UpdateBlocksInBlockTableRecord(tr, db, ps, blockName, attributeName, value);
+                                            }
                                         }
                                     }
-                                }
 
-                                tr.Commit();
-                            } // release DocumentLock BEFORE running commands
+                                    tr.Commit();
+                                }
+                            }
+                            finally
+                            {
+                                HostApplicationServices.WorkingDatabase = oldDb;
+                            }
 
                             if (updatedInFile)
                             {
-                                // We already re-sync the modified AttributeReference from AttributeDefinition using
-                                // SetAttributeFromBlock + AdjustAlignment inside UpdateBlocksInBlockTableRecord.
-                                // That is the API equivalent of ATTSYNC for the changed attributes, without relying
-                                // on the command system (which is unstable here).
-                                try { openedDoc.Editor.Regen(); } catch { }
-
-                                // Save reliably:
-                                // - If we opened the doc, SaveAs(file, originalVersion) preserves DWG version.
-                                // - If doc was already open, we avoid auto-saving to not disrupt the user's session;
-                                //   we cannot guarantee version preservation in that scenario, so we report a failure.
-                                if (!docWasAlreadyOpen)
-                                {
-                                    try
-                                    {
-                                        // Important: When a DWG is opened as a Document, the underlying file may be locked by AutoCAD.
-                                        // Saving back "in place" can throw eFileSharingViolation/eFilerError. Save to a temp file first,
-                                        // then close the document and replace the original on disk.
-                                        var dir = System.IO.Path.GetDirectoryName(filePath) ?? "";
-                                        var baseName = System.IO.Path.GetFileNameWithoutExtension(filePath);
-                                        var ext = System.IO.Path.GetExtension(filePath);
-                                        var tempPath = System.IO.Path.Combine(
-                                            dir,
-                                            $"{baseName}.tmp.{System.Guid.NewGuid():N}{ext}");
-
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] SaveAs temp (preserve version {originalDiskVersion}): {tempPath}");
-                                        openedDoc.Database.SaveAs(tempPath, originalDiskVersion);
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] SaveAs temp completed: {tempPath}");
-
-                                        // Close without saving (we already have the saved temp DWG).
-                                        openedDoc.CloseAndDiscard();
-                                        openedDoc = null;
-
-                                        // Replace original on disk.
-                                        System.IO.File.Copy(tempPath, filePath, true);
-                                        try { System.IO.File.Delete(tempPath); } catch { }
-
-                                        fileSucceeded = true; // IMPORTANT: mark success after successful replace
-                                    }
-                                    catch (Exception saveEx)
-                                    {
-                                        // Best-effort cleanup
-                                        try
-                                        {
-                                            if (openedDoc != null)
-                                            {
-                                                openedDoc.CloseAndDiscard();
-                                                openedDoc = null;
-                                            }
-                                        }
-                                        catch { }
-
-                                        fileError = $"Save failed: {saveEx.GetType().Name}: {saveEx.Message}";
-                                        fileSucceeded = false;
-                                    }
-                                }
-                                else
-                                {
-                                    // Document is already open in AutoCAD.
-                                    // Keep the previous behavior: apply changes in-memory and DO NOT force-save/close.
-                                    // This avoids disrupting the user's session and matches the expected workflow.
-                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocksInFiles] Document already open; leaving it open (changes applied in-memory, not saved): {filePath}");
-                                    fileSucceeded = true;
-                                }
-                            }
-                            else
-                            {
-                                fileSucceeded = true; // nothing to change, but no error
+                                // Save back preserving the file's original DWG version (do NOT use user's default).
+                                db.SaveAs(filePath, originalVersion);
                             }
 
-                            // Close only if we opened it in this run AND didn't already CloseAndSave.
-                            try
-                            {
-                                if (openedDoc != null && !docWasAlreadyOpen)
-                                {
-                                    openedDoc.CloseAndDiscard();
-                                }
-                            }
-                            catch { }
-
-                            try
-                            {
-                                if (previousDoc != null)
-                                {
-                                    dm.MdiActiveDocument = previousDoc;
-                                }
-                            }
-                            catch { }
+                            fileSucceeded = true;
                         }
                     }
                     catch (System.Exception exOuter)
@@ -645,6 +530,11 @@ namespace CadFilesUpdater
                                                 // We want the definition geometry to fully take effect.
                                                 attRef.AdjustAlignment(db);
                                                 try { attRef.RecordGraphicsModified(true); } catch { }
+
+                                                // 6) "Kick" (MOVE 0,0 -> 0,0 equivalent) in side-database:
+                                                // We cannot run AutoCAD commands offline, so we simulate a tiny modify+undo on geometry.
+                                                // This is best-effort and should be no-op in practice, but can trigger recalculation in some cases.
+                                                TryKickEntity(attRef);
                                                 System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] Re-sync + AdjustAlignment done.");
 
                                                 // Post-sync diagnostics
@@ -665,100 +555,11 @@ namespace CadFilesUpdater
                                         {
                                             HostApplicationServices.WorkingDatabase = oldDb;
                                         }
-                                        
-                                        // Immediately after text change, check what changed
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] AFTER TEXT CHANGE:");
-                                        var afterPosition = attRef.Position;
-                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position={afterPosition} (was {originalPosition})");
-                                        
-                                        if (hasAlignmentPoint)
-                                        {
-                                            try
-                                            {
-                                                var afterAlignmentPoint = attRef.AlignmentPoint;
-                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   AlignmentPoint={afterAlignmentPoint} (was {originalAlignmentPoint})");
-                                                
-                                                // Check if AlignmentPoint changed
-                                                var deltaX = Math.Abs(afterAlignmentPoint.X - originalAlignmentPoint.X);
-                                                var deltaY = Math.Abs(afterAlignmentPoint.Y - originalAlignmentPoint.Y);
-                                                var deltaZ = Math.Abs(afterAlignmentPoint.Z - originalAlignmentPoint.Z);
-                                                
-                                                if (deltaX > 0.0001 || deltaY > 0.0001 || deltaZ > 0.0001)
-                                                {
-                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   AlignmentPoint CHANGED! Delta: X={deltaX}, Y={deltaY}, Z={deltaZ}");
-                                                    attRef.AlignmentPoint = originalAlignmentPoint;
-                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Restored AlignmentPoint to {originalAlignmentPoint}");
-                                                    
-                                                    // Check Position after restoring AlignmentPoint
-                                                    var finalPosition = attRef.Position;
-                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position after restore={finalPosition}");
-                                                }
-                                                else
-                                                {
-                                                    System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   AlignmentPoint unchanged");
-                                                    
-                                                    // Even if AlignmentPoint is unchanged, Position might need recalculation
-                                                    // Calculate expected Position based on text length difference
-                                                    var textLengthDiff = (value?.Length ?? 0) - originalText.Length;
-                                                    if (textLengthDiff != 0)
-                                                    {
-                                                        System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Text length changed by {textLengthDiff} characters");
-                                                        
-                                                        // If Position already changed, the re-sync did its job.
-                                                        var posDx = Math.Abs(afterPosition.X - originalPosition.X);
-                                                        var posDy = Math.Abs(afterPosition.Y - originalPosition.Y);
-                                                        var posDz = Math.Abs(afterPosition.Z - originalPosition.Z);
-                                                        var positionChanged = posDx > 0.0001 || posDy > 0.0001 || posDz > 0.0001;
-                                                        
-                                                        if (positionChanged)
-                                                        {
-                                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position was recalculated (delta: X={posDx}, Y={posDy}, Z={posDz})");
-                                                        }
-                                                        else
-                                                        {
-                                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   WARNING: Position did not change even though text length changed");
-                                                        }
-                                                        
-                                                        // Try to manually recalculate Position
-                                                        // For BaseCenter, Position = AlignmentPoint - (text_width / 2)
-                                                        // We can't easily calculate text width, so try AdjustAlignment again
-                                                        try
-                                                        {
-                                                            attRef.AdjustAlignment(db);
-                                                            var recalcPosition = attRef.Position;
-                                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position after AdjustAlignment={recalcPosition}");
-                                                        }
-                                                        catch
-                                                        {
-                                                            System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   AdjustAlignment failed again");
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   ERROR reading AlignmentPoint: {ex.Message}");
-                                            }
-                                        }
-                                        else
-                                        {
-                                            // For left-aligned text, check if Position changed
-                                            var deltaX = Math.Abs(afterPosition.X - originalPosition.X);
-                                            var deltaY = Math.Abs(afterPosition.Y - originalPosition.Y);
-                                            var deltaZ = Math.Abs(afterPosition.Z - originalPosition.Z);
-                                            
-                                            if (deltaX > 0.0001 || deltaY > 0.0001 || deltaZ > 0.0001)
-                                            {
-                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position CHANGED! Delta: X={deltaX}, Y={deltaY}, Z={deltaZ}");
-                                                attRef.Position = originalPosition;
-                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Restored Position to {originalPosition}");
-                                            }
-                                            else
-                                            {
-                                                System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Position unchanged");
-                                            }
-                                        }
-                                        
+
+                                        // NOTE: We intentionally do NOT "restore" AlignmentPoint/Position based on previous values.
+                                        // In many problematic cases the stored AlignmentPoint/Position is already wrong after a TextString change.
+                                        // Our goal is to let AutoCAD's definition-driven geometry (SetAttributeFromBlock + AdjustAlignment) win.
+
                                         // Final values
                                         System.Diagnostics.Debug.WriteLine($"[UpdateBlocks] FINAL VALUES:");
                                         System.Diagnostics.Debug.WriteLine($"[UpdateBlocks]   Justify={attRef.Justify}");
@@ -790,6 +591,24 @@ namespace CadFilesUpdater
             }
 
             return updated;
+        }
+
+        private static void TryKickEntity(Entity ent)
+        {
+            try
+            {
+                // Tiny round-trip displacement to mark entity modified without changing its effective location.
+                // Using a very small epsilon reduces the chance of visible movement / precision issues.
+                const double eps = 1e-9;
+                var v = new Vector3d(eps, 0, 0);
+                ent.TransformBy(Matrix3d.Displacement(v));
+                ent.TransformBy(Matrix3d.Displacement(-v));
+                try { ent.RecordGraphicsModified(true); } catch { }
+            }
+            catch
+            {
+                // Best-effort only.
+            }
         }
     }
 }
