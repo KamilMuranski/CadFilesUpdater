@@ -55,6 +55,7 @@
             </Style.Triggers>
         </Style>
     </Window.Resources>
+
     <Grid Margin="10">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="320"/>
@@ -86,39 +87,42 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <Button Grid.Row="0" Grid.Column="0" Click="AddFiles_Click" Background="#16A34A" Style="{StaticResource IconButtonStyle}" Margin="0,0,8,8">
+                    <Button Grid.Row="0" Grid.Column="0" Click="AddFiles_Click" Background="#16A34A" Style="{StaticResource IconButtonStyle}" Margin="0,0,10,8">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE710;" Margin="0,0,8,0"/>
                             <TextBlock Text="Add"/>
                         </StackPanel>
                     </Button>
-                    <Button Grid.Row="0" Grid.Column="1" Click="RemoveFiles_Click" Background="#DC2626" Style="{StaticResource IconButtonStyle}" Margin="0,0,0,8">
+                    <Button Grid.Row="0" Grid.Column="1" Click="RemoveFiles_Click" Background="#DC2626" Style="{StaticResource IconButtonStyle}" Margin="10,0,0,8">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74D;" Margin="0,0,8,0"/>
                             <TextBlock Text="Remove"/>
                         </StackPanel>
                     </Button>
+
                     <!-- Row 1: Reload + one free slot (we may add another button later) -->
-                    <Button Grid.Row="1" Grid.Column="0" Click="ReloadFiles_Click" Background="#0EA5E9" Style="{StaticResource IconButtonStyle}" Margin="0,0,8,0">
+                    <Button Grid.Column="0" Click="ReloadFiles_Click" Background="#0EA5E9" Style="{StaticResource IconButtonStyle}" Margin="0,29,10,29" Grid.RowSpan="3">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" Margin="0,0,8,0"/>
                             <TextBlock Text="Reload"/>
                         </StackPanel>
                     </Button>
+
                     <!-- Row 2: Select/Unselect -->
-                    <Button Grid.Row="2" Grid.Column="0" Click="SelectAllFiles_Click" Background="#2563EB" Style="{StaticResource IconButtonStyle}" Margin="0,8,8,0">
+                    <Button Grid.Row="2" Grid.Column="0" Click="SelectAllFiles_Click" Background="#2563EB" Style="{StaticResource IconButtonStyle}" Margin="0,28,10,0">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,8,0"/>
                             <TextBlock Text="Select All"/>
                         </StackPanel>
                     </Button>
-                    <Button Grid.Row="2" Grid.Column="1" Click="UnselectAllFiles_Click" Background="#6B7280" Style="{StaticResource IconButtonStyle}" Margin="0,8,0,0">
+                    <Button Grid.Row="2" Grid.Column="1" Click="UnselectAllFiles_Click" Background="#6B7280" Style="{StaticResource IconButtonStyle}" Margin="10,28,0,0">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,8,0"/>
                             <TextBlock Text="Unselect All"/>
                         </StackPanel>
                     </Button>
                 </Grid>
+
                 <TextBlock x:Name="FilesSummaryText" Text="0 file(s) loaded" Margin="0,0,0,0" Foreground="Gray"/>
             </StackPanel>
 
@@ -140,20 +144,43 @@
             <!-- Blocks -->
             <StackPanel Grid.Row="3" Orientation="Vertical">
                 <TextBlock Text="Blocks (for selected files)" FontWeight="Bold" Margin="0,0,0,6"/>
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                    <Button Click="SelectAllBlocks_Click" Background="#2563EB" Style="{StaticResource SmallIconButtonStyle}" Margin="0,0,6,0">
+
+                <!-- POPRAWKA: zamiast StackPanel -> Grid, aby dzia³a³o centrowanie w pionie i wyrównanie L/P -->
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="6"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0"
+                            Click="SelectAllBlocks_Click"
+                            Background="#2563EB"
+                            Style="{StaticResource IconButtonStyle}"
+                            Width="150"
+                            Margin="0"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,6,0"/>
                             <TextBlock Text="Select All"/>
                         </StackPanel>
                     </Button>
-                    <Button Click="UnselectAllBlocks_Click" Background="#6B7280" Style="{StaticResource SmallIconButtonStyle}" Margin="0,0,0,0">
+
+                    <Button Grid.Column="2"
+                            Click="UnselectAllBlocks_Click"
+                            Background="#6B7280"
+                            Style="{StaticResource IconButtonStyle}"
+                            Width="150"
+                            Margin="0"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,6,0"/>
                             <TextBlock Text="Unselect All"/>
                         </StackPanel>
                     </Button>
-                </StackPanel>
+                </Grid>
             </StackPanel>
 
             <ListView x:Name="BlocksListView" Grid.Row="4" Margin="0,8,0,0" SelectionMode="Extended"
@@ -192,8 +219,7 @@
                       HeadersVisibility="All"
                       GridLinesVisibility="All"
                       AlternatingRowBackground="#FFF7F7F7"
-                      RowBackground="White"
-                      >
+                      RowBackground="White">
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
                         <Style.Triggers>
@@ -212,7 +238,7 @@
 
             <DockPanel Grid.Row="1" Margin="0,10,0,0" LastChildFill="False">
                 <Button Click="ApplySimilar_Click"
-                        Background="#2563EB"
+                        Background="#F97316"
                         Style="{StaticResource BottomActionButtonStyle}"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
@@ -220,14 +246,17 @@
                         <TextBlock Text="Apply to all attributes"/>
                     </StackPanel>
                 </Button>
+
                 <Button Click="SaveChanges_Click"
                         Background="#7C3AED"
-                        Style="{StaticResource BottomActionButtonStyle}">
+                        Style="{StaticResource BottomActionButtonStyle}"
+                        Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" Margin="0,0,8,0"/>
                         <TextBlock Text="Save changes"/>
                     </StackPanel>
                 </Button>
+
                 <TextBlock x:Name="GridSummaryText" DockPanel.Dock="Right" Foreground="Gray" VerticalAlignment="Center" Margin="10,0,0,0"/>
             </DockPanel>
         </Grid>

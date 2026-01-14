@@ -256,7 +256,8 @@ namespace CadFilesUpdater
                 }
                 catch (Autodesk.AutoCAD.Runtime.Exception acadEx)
                 {
-                    result.Errors.Add(new FileError(filePath, FormatAcadException(acadEx)));
+                    string errorMsg = FormatAcadException(acadEx, filePath);
+                    result.Errors.Add(new FileError(filePath, errorMsg));
                     result.FailedFiles++;
                 }
                 catch (Exception ex)
@@ -301,30 +302,53 @@ namespace CadFilesUpdater
             return false;
         }
 
-        private static string FormatAcadException(Autodesk.AutoCAD.Runtime.Exception acadEx)
+        private static string FormatAcadException(Autodesk.AutoCAD.Runtime.Exception acadEx, string filePath = null)
         {
             if (acadEx == null) return "AutoCAD error";
             try
             {
-                // Prefer explicit status to raw exception text, but avoid compile-time dependency
-                // on enum member names (they differ between some AutoCAD .NET references).
                 var statusName = acadEx.ErrorStatus.ToString();
+                var message = acadEx.Message ?? "";
 
+                // Check for file sharing violations
                 if (string.Equals(statusName, "eFileSharingViolation", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(statusName, "eFileShareViolation", StringComparison.OrdinalIgnoreCase))
-                    return "File is in use (sharing violation). Close it in AutoCAD/another app and try again. (" + statusName + ")";
+                    string.Equals(statusName, "eFileShareViolation", StringComparison.OrdinalIgnoreCase) ||
+                    message.IndexOf("sharing", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return "File is in use (sharing violation). Close it in AutoCAD/another app and try again.";
 
-                if (string.Equals(statusName, "eFilerError", StringComparison.OrdinalIgnoreCase))
-                    return "AutoCAD file I/O error. The file may be open/locked, read-only, or require recovery. (eFilerError)";
+                // Check for FilerError (may appear as "eFilerError", "FilerError", or in message)
+                bool isFilerError = string.Equals(statusName, "eFilerError", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(statusName, "FilerError", StringComparison.OrdinalIgnoreCase) ||
+                                    message.IndexOf("FilerError", StringComparison.OrdinalIgnoreCase) >= 0;
 
-                if (string.Equals(statusName, "eAccessDenied", StringComparison.OrdinalIgnoreCase))
-                    return "Access denied while reading/writing the file. Check permissions/read-only flag. (eAccessDenied)";
+                if (isFilerError)
+                {
+                    // Check if file is open in AutoCAD for more specific message
+                    if (!string.IsNullOrWhiteSpace(filePath) && IsFileOpenInAutoCAD(filePath))
+                        return "File is currently open in AutoCAD. Close the drawing and try again.";
+                    
+                    return "Cannot save file. The file may be open in another application, locked, read-only, or corrupted. Close any programs using this file and try again.";
+                }
 
-                return "AutoCAD error: " + statusName;
+                // Check for access denied
+                if (string.Equals(statusName, "eAccessDenied", StringComparison.OrdinalIgnoreCase) ||
+                    message.IndexOf("access denied", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    message.IndexOf("permission", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return "Access denied. Check file permissions and ensure the file is not read-only.";
+
+                // Generic error with status name if available
+                if (!string.IsNullOrWhiteSpace(statusName) && !statusName.Equals("eOk", StringComparison.OrdinalIgnoreCase))
+                    return "AutoCAD error: " + statusName;
+
+                // Fallback to message if available
+                if (!string.IsNullOrWhiteSpace(message))
+                    return message;
+
+                return "AutoCAD error occurred while processing the file.";
             }
             catch
             {
-                return acadEx.Message ?? "AutoCAD error";
+                return acadEx.Message ?? "AutoCAD error occurred while processing the file.";
             }
         }
 
