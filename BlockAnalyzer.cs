@@ -4,9 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using Autodesk.AutoCAD.ApplicationServices;
-using Autodesk.AutoCAD.ApplicationServices.Core;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using AcCoreApp = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
 namespace CadFilesUpdater
 {
@@ -31,6 +31,395 @@ namespace CadFilesUpdater
         // NOTE:
         // In AutoCAD 2021, calling Editor.Command (QSAVE/ATTSYNC) from a modeless WPF UI event handler can throw
         // eInvalidInput. Therefore we avoid command-based save/sync and use API equivalents instead.
+
+        public sealed class AttributeInstanceRow
+        {
+            public string FilePath { get; set; }
+            public string LayoutName { get; set; } // "Model" or layout name
+            public string BlockName { get; set; }
+            public string BlockHandle { get; set; } // Handle string of BlockReference
+            public Dictionary<string, string> Attributes { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public readonly struct ChangeKey : IEquatable<ChangeKey>
+        {
+            public string FilePath { get; }
+            public string BlockHandle { get; }
+            public string BlockName { get; }
+            public string AttributeTag { get; }
+
+            public ChangeKey(string filePath, string blockHandle, string blockName, string attributeTag)
+            {
+                FilePath = filePath ?? "";
+                BlockHandle = blockHandle ?? "";
+                BlockName = blockName ?? "";
+                AttributeTag = attributeTag ?? "";
+            }
+
+            public bool Equals(ChangeKey other) =>
+                string.Equals(FilePath, other.FilePath, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(BlockHandle, other.BlockHandle, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(BlockName, other.BlockName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(AttributeTag, other.AttributeTag, StringComparison.OrdinalIgnoreCase);
+
+            public override bool Equals(object obj) => obj is ChangeKey other && Equals(other);
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int hash = 17;
+                    hash = hash * 23 + StringComparer.OrdinalIgnoreCase.GetHashCode(FilePath ?? "");
+                    hash = hash * 23 + StringComparer.OrdinalIgnoreCase.GetHashCode(BlockHandle ?? "");
+                    hash = hash * 23 + StringComparer.OrdinalIgnoreCase.GetHashCode(BlockName ?? "");
+                    hash = hash * 23 + StringComparer.OrdinalIgnoreCase.GetHashCode(AttributeTag ?? "");
+                    return hash;
+                }
+            }
+        }
+
+        public static List<AttributeInstanceRow> AnalyzeAttributeInstances(string filePath)
+        {
+            var results = new List<AttributeInstanceRow>();
+            using (var db = new Database(false, true))
+            {
+                db.ReadDwgFile(filePath, FileOpenMode.OpenForReadAndAllShare, false, null);
+                db.CloseInput(true);
+
+                Database oldDb = HostApplicationServices.WorkingDatabase;
+                HostApplicationServices.WorkingDatabase = db;
+                try
+                {
+                    using (var tr = db.TransactionManager.StartTransaction())
+                    {
+                        var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+
+                        // Model space
+                        var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                        ScanBlockTableRecordForAttributes(tr, ms, filePath, "Model", results);
+
+                        // Paper space layouts
+                        var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                        if (layoutDict != null)
+                        {
+                            foreach (DBDictionaryEntry entry in layoutDict)
+                            {
+                                var layout = tr.GetObject(entry.Value, OpenMode.ForRead) as Layout;
+                                if (layout != null && layout.LayoutName != "Model")
+                                {
+                                    var ps = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+                                    ScanBlockTableRecordForAttributes(tr, ps, filePath, layout.LayoutName, results);
+                                }
+                            }
+                        }
+
+                        tr.Commit();
+                    }
+                }
+                finally
+                {
+                    HostApplicationServices.WorkingDatabase = oldDb;
+                }
+            }
+
+            return results;
+        }
+
+        private static void ScanBlockTableRecordForAttributes(
+            Transaction tr,
+            BlockTableRecord btr,
+            string filePath,
+            string layoutName,
+            List<AttributeInstanceRow> results)
+        {
+            foreach (ObjectId entId in btr)
+            {
+                var ent = tr.GetObject(entId, OpenMode.ForRead) as Entity;
+                var br = ent as BlockReference;
+                if (br == null) continue;
+
+                try
+                {
+                    string blockName = null;
+                    var dynId = br.DynamicBlockTableRecord;
+                    if (dynId.IsValid)
+                    {
+                        var dynBtr = tr.GetObject(dynId, OpenMode.ForRead) as BlockTableRecord;
+                        blockName = dynBtr?.Name;
+                    }
+                    if (string.IsNullOrWhiteSpace(blockName))
+                    {
+                        var staticBtr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                        blockName = staticBtr?.Name ?? "";
+                    }
+
+                    var row = new AttributeInstanceRow
+                    {
+                        FilePath = filePath,
+                        LayoutName = layoutName,
+                        BlockName = blockName,
+                        BlockHandle = br.Handle.ToString()
+                    };
+
+                    if (br.AttributeCollection != null)
+                    {
+                        foreach (ObjectId attId in br.AttributeCollection)
+                        {
+                            var attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
+                            if (attRef == null) continue;
+                            if (string.IsNullOrWhiteSpace(attRef.Tag)) continue;
+                            row.Attributes[attRef.Tag] = attRef.TextString ?? "";
+                        }
+                    }
+
+                    if (row.Attributes.Count > 0)
+                        results.Add(row);
+                }
+                catch
+                {
+                    // Best-effort scanning
+                }
+            }
+        }
+
+        public static UpdateResult SaveCachedChanges(
+            IDictionary<ChangeKey, string> changes,
+            List<string> filePaths,
+            System.Action<int, int, string> progressCallback = null)
+        {
+            var result = new UpdateResult { TotalFiles = filePaths.Count };
+            if (changes == null || changes.Count == 0)
+                return result;
+
+            // Group changes by file for efficiency.
+            var byFile = new Dictionary<string, List<KeyValuePair<ChangeKey, string>>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in changes)
+            {
+                if (!byFile.TryGetValue(kv.Key.FilePath, out var list))
+                {
+                    list = new List<KeyValuePair<ChangeKey, string>>();
+                    byFile[kv.Key.FilePath] = list;
+                }
+                list.Add(kv);
+            }
+
+            foreach (var filePath in filePaths)
+            {
+                result.ProcessedFiles++;
+                progressCallback?.Invoke(result.ProcessedFiles, result.TotalFiles, filePath);
+
+                if (!byFile.TryGetValue(filePath, out var fileChanges) || fileChanges.Count == 0)
+                {
+                    result.SuccessfulFiles++;
+                    continue;
+                }
+
+                try
+                {
+                    if (IsFileOpenInAutoCAD(filePath))
+                    {
+                        result.Errors.Add(new FileError(filePath,
+                            "File is currently open in AutoCAD. Skipped saving to avoid conflicts. Please close the drawing and try again."));
+                        result.FailedFiles++;
+                        continue;
+                    }
+
+                    using (var db = new Database(false, true))
+                    {
+                        db.ReadDwgFile(filePath, FileOpenMode.OpenForReadAndAllShare, false, null);
+                        db.CloseInput(true);
+
+                        var originalVersion = db.OriginalFileVersion;
+
+                        Database oldDb = HostApplicationServices.WorkingDatabase;
+                        HostApplicationServices.WorkingDatabase = db;
+                        try
+                        {
+                            using (var tr = db.TransactionManager.StartTransaction())
+                            {
+                                foreach (var kv in fileChanges)
+                                {
+                                    ApplySingleChange(tr, db, kv.Key, kv.Value);
+                                }
+                                tr.Commit();
+                            }
+                        }
+                        finally
+                        {
+                            HostApplicationServices.WorkingDatabase = oldDb;
+                        }
+
+                        db.SaveAs(filePath, originalVersion);
+                    }
+
+                    result.SuccessfulFiles++;
+                }
+                catch (Autodesk.AutoCAD.Runtime.Exception acadEx)
+                {
+                    result.Errors.Add(new FileError(filePath, FormatAcadException(acadEx)));
+                    result.FailedFiles++;
+                }
+                catch (Exception ex)
+                {
+                    result.Errors.Add(new FileError(filePath, ex.Message));
+                    result.FailedFiles++;
+                }
+            }
+
+            return result;
+        }
+
+        private static bool IsFileOpenInAutoCAD(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath)) return false;
+
+            try
+            {
+                var dm = AcCoreApp.DocumentManager;
+                if (dm == null) return false;
+
+                foreach (Document doc in dm)
+                {
+                    try
+                    {
+                        var name = doc?.Name;
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        if (string.Equals(name, filePath, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                    catch
+                    {
+                        // ignore individual doc issues
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+
+            return false;
+        }
+
+        private static string FormatAcadException(Autodesk.AutoCAD.Runtime.Exception acadEx)
+        {
+            if (acadEx == null) return "AutoCAD error";
+            try
+            {
+                // Prefer explicit status to raw exception text, but avoid compile-time dependency
+                // on enum member names (they differ between some AutoCAD .NET references).
+                var statusName = acadEx.ErrorStatus.ToString();
+
+                if (string.Equals(statusName, "eFileSharingViolation", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(statusName, "eFileShareViolation", StringComparison.OrdinalIgnoreCase))
+                    return "File is in use (sharing violation). Close it in AutoCAD/another app and try again. (" + statusName + ")";
+
+                if (string.Equals(statusName, "eFilerError", StringComparison.OrdinalIgnoreCase))
+                    return "AutoCAD file I/O error. The file may be open/locked, read-only, or require recovery. (eFilerError)";
+
+                if (string.Equals(statusName, "eAccessDenied", StringComparison.OrdinalIgnoreCase))
+                    return "Access denied while reading/writing the file. Check permissions/read-only flag. (eAccessDenied)";
+
+                return "AutoCAD error: " + statusName;
+            }
+            catch
+            {
+                return acadEx.Message ?? "AutoCAD error";
+            }
+        }
+
+        private static void ApplySingleChange(Transaction tr, Database db, ChangeKey key, string newValue)
+        {
+            if (string.IsNullOrWhiteSpace(key.BlockHandle) || string.IsNullOrWhiteSpace(key.AttributeTag))
+                return;
+
+            try
+            {
+                var h = new Handle(Convert.ToInt64(key.BlockHandle, 16));
+                var id = db.GetObjectId(false, h, 0);
+                if (id == ObjectId.Null || !id.IsValid) return;
+
+                var br = tr.GetObject(id, OpenMode.ForWrite) as BlockReference;
+                if (br == null) return;
+
+                // Determine effective block name and definition BTR
+                BlockTableRecord defBtr = null;
+                string effectiveName = null;
+
+                var dynId = br.DynamicBlockTableRecord;
+                if (dynId.IsValid)
+                {
+                    defBtr = tr.GetObject(dynId, OpenMode.ForRead) as BlockTableRecord;
+                    effectiveName = defBtr?.Name;
+                }
+                if (defBtr == null)
+                {
+                    defBtr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                    effectiveName = defBtr?.Name;
+                }
+
+                if (!string.IsNullOrWhiteSpace(key.BlockName) &&
+                    !string.IsNullOrWhiteSpace(effectiveName) &&
+                    !effectiveName.Equals(key.BlockName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return; // safety: don't update a different block than the one user edited
+                }
+
+                if (br.AttributeCollection == null) return;
+
+                AttributeReference targetAtt = null;
+                foreach (ObjectId attId in br.AttributeCollection)
+                {
+                    var attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                    if (attRef == null) continue;
+                    if (attRef.Tag != null && attRef.Tag.Equals(key.AttributeTag, StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetAtt = attRef;
+                        break;
+                    }
+                }
+                if (targetAtt == null) return;
+
+                // Update + ATTSYNC-style refresh from definition
+                targetAtt.TextString = newValue ?? "";
+
+                AttributeDefinition matchingAttDef = null;
+                if (defBtr != null)
+                {
+                    foreach (ObjectId defId in defBtr)
+                    {
+                        var defEnt = tr.GetObject(defId, OpenMode.ForRead) as Entity;
+                        if (defEnt is AttributeDefinition ad &&
+                            ad.Tag.Equals(key.AttributeTag, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matchingAttDef = ad;
+                            break;
+                        }
+                    }
+                }
+
+                if (matchingAttDef != null)
+                {
+                    targetAtt.SetAttributeFromBlock(matchingAttDef, br.BlockTransform);
+                    targetAtt.TextString = newValue ?? "";
+                }
+
+                try
+                {
+                    if (targetAtt.IsMTextAttribute)
+                        targetAtt.UpdateMTextAttribute();
+                }
+                catch { }
+
+                try { targetAtt.AdjustAlignment(db); } catch { }
+                try { targetAtt.RecordGraphicsModified(true); } catch { }
+                TryKickEntity(targetAtt);
+            }
+            catch
+            {
+                // Best-effort per attribute
+            }
+        }
 
         public static List<BlockInfo> AnalyzeFiles(List<string> filePaths)
         {

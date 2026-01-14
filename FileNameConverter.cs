@@ -11,7 +11,7 @@ namespace CadFilesUpdater
         {
             if (value is string filePath)
             {
-                return Path.GetFileName(filePath);
+                return Path.GetFileNameWithoutExtension(filePath);
             }
             return value;
         }

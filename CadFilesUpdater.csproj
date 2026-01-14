@@ -89,6 +89,12 @@
     <Compile Include="MainWindow.xaml.cs">
       <DependentUpon>MainWindow.xaml</DependentUpon>
     </Compile>
+    <Compile Include="ApplySimilarWindow.xaml.cs">
+      <DependentUpon>ApplySimilarWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="ChooseAttributeWindow.xaml.cs">
+      <DependentUpon>ChooseAttributeWindow.xaml</DependentUpon>
+    </Compile>
     <Compile Include="BlockAnalyzer.cs" />
     <Compile Include="UpdateResult.cs" />
     <Compile Include="FileNameConverter.cs" />
@@ -99,6 +105,14 @@
   </ItemGroup>
   <ItemGroup>
     <Page Include="MainWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ApplySimilarWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="ChooseAttributeWindow.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
