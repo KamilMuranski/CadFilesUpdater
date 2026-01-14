@@ -54,7 +54,7 @@
                     <Button Grid.Column="1"
                             Content="Choose attribute..."
                             Click="ChooseAttribute_Click"
-                            Background="#2563EB"
+                            Background="#FFD700"
                             Style="{StaticResource IconButtonStyle}"
                             Margin="10,0,0,0"
                             VerticalAlignment="Center"/>
@@ -67,7 +67,7 @@
             <DockPanel Grid.Row="3" Margin="0,12,0,0" LastChildFill="False" VerticalAlignment="Top">
                 <Button Content="Apply changes in selected files"
                         Click="ApplySelected_Click"
-                        Background="#2563EB"
+                        Background="#065F46"
                         Style="{StaticResource IconButtonStyle}"
                         Margin="0,0,10,0"/>
                 <Button Content="Apply changes in all files"

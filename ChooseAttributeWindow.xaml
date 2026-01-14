@@ -28,6 +28,7 @@
             </Setter>
         </Style>
     </Window.Resources>
+
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -35,7 +36,10 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" Text="Select file, then block and attribute:" FontWeight="Bold" Margin="0,0,0,10"/>
+        <TextBlock Grid.Row="0"
+                   Text="Select file (optionally), then block and attribute:"
+                   FontWeight="Bold"
+                   Margin="0,0,0,10"/>
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
@@ -52,6 +56,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
+
                 <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,6">
                     <TextBlock Text="Files" FontWeight="Bold" DockPanel.Dock="Left"/>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
@@ -63,10 +68,14 @@
                         </Button>
                     </StackPanel>
                 </DockPanel>
-                <ListBox x:Name="FilesList" Grid.Row="1" SelectionChanged="FilesList_SelectionChanged" SelectionMode="Single">
+
+                <ListBox x:Name="FilesList"
+                         Grid.Row="1"
+                         SelectionChanged="FilesList_SelectionChanged"
+                         SelectionMode="Single">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding FilePath, Converter={StaticResource FileNameConverter}}" />
+                            <TextBlock Text="{Binding FilePath, Converter={StaticResource FileNameConverter}}"/>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
@@ -78,8 +87,25 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0" Text="Blocks" FontWeight="Bold" Margin="0,0,0,6"/>
-                <ListBox x:Name="BlocksList" Grid.Row="1" SelectionChanged="BlocksList_SelectionChanged"/>
+
+                <!-- Header height aligned with Files by reserving space for a hidden button -->
+                <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,6">
+                    <TextBlock Text="Blocks" FontWeight="Bold" DockPanel.Dock="Left"/>
+                    <Button DockPanel.Dock="Right"
+                            Background="#2563EB"
+                            Style="{StaticResource IconButtonStyle}"
+                            Visibility="Hidden"
+                            IsHitTestVisible="False">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,6,0"/>
+                            <TextBlock Text="All files"/>
+                        </StackPanel>
+                    </Button>
+                </DockPanel>
+
+                <ListBox x:Name="BlocksList"
+                         Grid.Row="1"
+                         SelectionChanged="BlocksList_SelectionChanged"/>
             </Grid>
 
             <!-- Attributes -->
@@ -88,8 +114,24 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0" Text="Attributes" FontWeight="Bold" Margin="0,0,0,6"/>
-                <ListBox x:Name="AttributesList" Grid.Row="1"/>
+
+                <!-- Header height aligned with Files by reserving space for a hidden button -->
+                <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,6">
+                    <TextBlock Text="Attributes" FontWeight="Bold" DockPanel.Dock="Left"/>
+                    <Button DockPanel.Dock="Right"
+                            Background="#2563EB"
+                            Style="{StaticResource IconButtonStyle}"
+                            Visibility="Hidden"
+                            IsHitTestVisible="False">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,6,0"/>
+                            <TextBlock Text="All files"/>
+                        </StackPanel>
+                    </Button>
+                </DockPanel>
+
+                <ListBox x:Name="AttributesList"
+                         Grid.Row="1"/>
             </Grid>
         </Grid>
 
@@ -109,4 +151,3 @@
         </DockPanel>
     </Grid>
 </Window>
-

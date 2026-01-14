@@ -145,7 +145,6 @@
             <StackPanel Grid.Row="3" Orientation="Vertical">
                 <TextBlock Text="Blocks (for selected files)" FontWeight="Bold" Margin="0,0,0,6"/>
 
-                <!-- POPRAWKA: zamiast StackPanel -> Grid, aby dzia³a³o centrowanie w pionie i wyrównanie L/P -->
                 <Grid Margin="0,0,0,6">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
