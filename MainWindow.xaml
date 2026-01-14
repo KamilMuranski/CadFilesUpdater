@@ -218,7 +218,8 @@
                       HeadersVisibility="All"
                       GridLinesVisibility="All"
                       AlternatingRowBackground="#FFF7F7F7"
-                      RowBackground="White">
+                      RowBackground="White"
+                      ContextMenuOpening="AttributesDataGrid_ContextMenuOpening">
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
                         <Style.Triggers>
@@ -233,6 +234,13 @@
                         </Style.Triggers>
                     </Style>
                 </DataGrid.CellStyle>
+                <DataGrid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Revert this attribute" Click="ContextMenu_RevertAttribute_Click"/>
+                        <MenuItem Header="Revert all changes for this block" Click="ContextMenu_RevertBlock_Click"/>
+                        <MenuItem Header="Revert all changes for this file" Click="ContextMenu_RevertFile_Click"/>
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
             </DataGrid>
 
             <DockPanel Grid.Row="1" Margin="0,10,0,0" LastChildFill="False">
@@ -247,12 +255,36 @@
                 </Button>
 
                 <Button Click="SaveChanges_Click"
-                        Background="#7C3AED"
+                        Background="#C026D3"
                         Style="{StaticResource BottomActionButtonStyle}"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" Margin="0,0,8,0"/>
                         <TextBlock Text="Save changes"/>
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="UndoButton" Click="Undo_Click"
+                        Background="#92400E"
+                        Style="{StaticResource BottomActionButtonStyle}"
+                        Width="110"
+                        Margin="0,0,10,0"
+                        IsEnabled="False">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7A7;" Margin="0,0,8,0"/>
+                        <TextBlock Text="Undo"/>
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="RedoButton" Click="Redo_Click"
+                        Background="#92400E"
+                        Style="{StaticResource BottomActionButtonStyle}"
+                        Width="110"
+                        Margin="0,0,10,0"
+                        IsEnabled="False">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE7A6;" Margin="0,0,8,0"/>
+                        <TextBlock Text="Redo"/>
                     </StackPanel>
                 </Button>
 

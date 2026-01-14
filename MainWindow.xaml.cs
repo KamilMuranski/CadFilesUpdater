@@ -43,12 +43,27 @@ namespace CadFilesUpdater.Windows
         private readonly Dictionary<BlockAnalyzer.ChangeKey, string> _changes =
             new Dictionary<BlockAnalyzer.ChangeKey, string>();
 
+        // Column display order preservation (column name -> DisplayIndex)
+        private Dictionary<string, int> _savedColumnOrder = null;
+
+        // Undo/Redo system
+        private sealed class ChangeSnapshot
+        {
+            public Dictionary<BlockAnalyzer.ChangeKey, string> Changes { get; set; }
+            public string Description { get; set; }
+        }
+        private readonly List<ChangeSnapshot> _undoHistory = new List<ChangeSnapshot>();
+        private int _undoHistoryIndex = -1;
+        private const int MaxUndoHistory = 50;
+
         private LastEditedContext _lastEdited;
         // Remember last values used in Apply window (when no table edit was made)
         private string _lastApplyValue = "";
         private string _lastApplyBlockName = "";
         private string _lastApplyAttributeTag = "";
         private DataTable _table;
+        // Track file order for alternating colors in non-editable columns
+        private readonly List<string> _fileOrder = new List<string>();
         private int? _lastFileClickIndex;
         private int? _lastBlockClickIndex;
         private bool? _lastFileRangeState;
@@ -67,6 +82,11 @@ namespace CadFilesUpdater.Windows
             InitDebouncedRefresh();
             RebuildGrid();
             UpdateSummaries();
+            
+            // Setup keyboard shortcuts for undo/redo
+            KeyDown += MainWindow_KeyDown;
+            
+            UpdateUndoRedoButtons();
         }
 
         private void InitDebouncedRefresh()
@@ -486,7 +506,7 @@ namespace CadFilesUpdater.Windows
             // (headers are user-friendly and not stable identifiers).
             e.Column.SortMemberPath = e.PropertyName;
 
-            // Friendly headers
+            // Friendly headers for non-editable columns (colors set dynamically in RefreshGridCellStylesForRow)
             if (string.Equals(e.PropertyName, "File", StringComparison.OrdinalIgnoreCase))
             {
                 e.Column.Header = "Drawing";
@@ -568,6 +588,9 @@ namespace CadFilesUpdater.Windows
                 AttributeTag = colName,
                 Value = newValue
             };
+            
+            // Record undo state for single cell edit
+            RecordUndoState("Edit cell");
 
             RefreshGridCellStylesForRow(e.Row);
         }
@@ -593,16 +616,19 @@ namespace CadFilesUpdater.Windows
 
         private void RefreshAllGridCellStyles()
         {
-            // Defer until visuals exist.
+            // Defer until visuals exist. Use Render priority to ensure cells are created.
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                for (int i = 0; i < AttributesDataGrid.Items.Count; i++)
+                // First pass: refresh visible rows immediately
+                RefreshGridCellStylesForVisibleRows();
+                
+                // Second pass: ensure all rows get refreshed after a short delay
+                // This handles cases where cells are created lazily due to virtualization
+                Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    var row = (DataGridRow)AttributesDataGrid.ItemContainerGenerator.ContainerFromIndex(i);
-                    if (row != null)
-                        RefreshGridCellStylesForRow(row);
-                }
-            }), System.Windows.Threading.DispatcherPriority.Background);
+                    RefreshGridCellStylesForVisibleRows();
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }), System.Windows.Threading.DispatcherPriority.Render);
         }
 
         private void RefreshGridCellStylesForRow(DataGridRow row)
@@ -619,34 +645,65 @@ namespace CadFilesUpdater.Windows
                 if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(handle) || string.IsNullOrWhiteSpace(blockName))
                     return;
 
+                // Ensure row template is applied and cells are generated
+                if (!row.IsLoaded)
+                {
+                    row.UpdateLayout();
+                }
+
+                // Determine file index for alternating colors (only for non-editable columns)
+                int fileIndex = _fileOrder.IndexOf(filePath);
+                bool isEvenFile = fileIndex >= 0 && (fileIndex % 2 == 0);
+                // Light yellow for even files, slightly darker yellow for odd files
+                Color nonEditableBgColor = isEvenFile 
+                    ? Color.FromRgb(0xFE, 0xF9, 0xC3) // Light yellow (original)
+                    : Color.FromRgb(0xF9, 0xF3, 0xA8); // Slightly darker yellow
+
                 for (int colIndex = 0; colIndex < AttributesDataGrid.Columns.Count; colIndex++)
                 {
                     var col = AttributesDataGrid.Columns[colIndex];
                     var colName = col.SortMemberPath ?? (col.Header?.ToString() ?? "");
-                    if (colName == "File" || colName == "LayoutOwner" || colName == "BlockName") continue;
-
+                    
                     var cell = GetCell(row, colIndex);
-                    if (cell == null) continue;
+                    if (cell == null)
+                    {
+                        // If cell doesn't exist yet, try to force generation
+                        row.UpdateLayout();
+                        cell = GetCell(row, colIndex);
+                        if (cell == null) continue;
+                    }
+                    
+                    // Set background for non-editable columns (File, LayoutOwner, BlockName) - alternating yellow
+                    if (colName == "File" || colName == "LayoutOwner" || colName == "BlockName")
+                    {
+                        cell.Background = new SolidColorBrush(nonEditableBgColor);
+                        cell.IsEnabled = false;
+                        continue;
+                    }
 
+                    // Editable attribute columns - always white (unless changed or N/A)
                     string cellValue = null;
                     try { cellValue = drv.Row[colName]?.ToString(); } catch { }
 
                     var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
                     if (_changes.ContainsKey(key))
                     {
+                        // Changed cell: light green
                         cell.Background = new SolidColorBrush(Color.FromRgb(0xBB, 0xF7, 0xD0)); // light green
                         cell.Foreground = Brushes.Black;
                         cell.FontStyle = FontStyles.Normal;
                     }
                     else if (string.Equals(cellValue, "N/A", StringComparison.OrdinalIgnoreCase))
                     {
+                        // N/A cell: light yellow
                         cell.Background = new SolidColorBrush(Color.FromRgb(0xFE, 0xF9, 0xC3)); // light yellow
                         cell.Foreground = Brushes.Gray;
                         cell.FontStyle = FontStyles.Italic;
                     }
                     else
                     {
-                        cell.ClearValue(DataGridCell.BackgroundProperty);
+                        // Normal editable cell: white background
+                        cell.Background = Brushes.White;
                         cell.ClearValue(DataGridCell.ForegroundProperty);
                         cell.ClearValue(DataGridCell.FontStyleProperty);
                     }
@@ -676,11 +733,14 @@ namespace CadFilesUpdater.Windows
 
         private void AttributesDataGrid_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
-            // Horizontal scrolling creates/destroys cells because of column virtualization.
-            // Refresh styles for currently realized cells so "changed" (green) stays correct while scrolling.
+            // Both horizontal and vertical scrolling create/destroy cells because of virtualization.
+            // Refresh styles for currently realized cells so colors stay correct while scrolling.
             if (Math.Abs(e.HorizontalChange) > 0.0 ||
+                Math.Abs(e.VerticalChange) > 0.0 ||
                 Math.Abs(e.ExtentWidthChange) > 0.0 ||
-                Math.Abs(e.ViewportWidthChange) > 0.0)
+                Math.Abs(e.ExtentHeightChange) > 0.0 ||
+                Math.Abs(e.ViewportWidthChange) > 0.0 ||
+                Math.Abs(e.ViewportHeightChange) > 0.0)
             {
                 ScheduleGridStyleRefresh();
             }
@@ -704,10 +764,53 @@ namespace CadFilesUpdater.Windows
             var allFiles = _files.Select(f => f.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var defaultSelected = GetSelectedFilePaths();
             
-            // If user edited in table, use those values; otherwise use remembered values from Apply window
-            string initialValue = _lastEdited?.Value ?? _lastApplyValue ?? "";
-            string initialBlockName = _lastEdited?.BlockName ?? _lastApplyBlockName ?? "";
-            string initialAttributeTag = _lastEdited?.AttributeTag ?? _lastApplyAttributeTag ?? "";
+            // Get current values from selected cell or last change, not from _lastEdited (which may be outdated after undo)
+            string initialValue = "";
+            string initialBlockName = "";
+            string initialAttributeTag = "";
+            
+            // Try to get from currently selected cell
+            var selectedCell = AttributesDataGrid.CurrentCell;
+            if (selectedCell.Item is DataRowView drv && selectedCell.Column != null)
+            {
+                var colName = selectedCell.Column.SortMemberPath;
+                if (!string.IsNullOrWhiteSpace(colName) &&
+                    !colName.Equals("File", StringComparison.OrdinalIgnoreCase) &&
+                    !colName.Equals("LayoutOwner", StringComparison.OrdinalIgnoreCase) &&
+                    !colName.Equals("BlockName", StringComparison.OrdinalIgnoreCase))
+                {
+                    var filePath = drv.Row["FilePath"]?.ToString();
+                    var handle = drv.Row["Handle"]?.ToString();
+                    var blockName = drv.Row["BlockName"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(filePath) && !string.IsNullOrWhiteSpace(handle) && !string.IsNullOrWhiteSpace(blockName))
+                    {
+                        var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+                        if (_changes.TryGetValue(key, out var currentValue))
+                        {
+                            initialValue = currentValue;
+                            initialBlockName = blockName;
+                            initialAttributeTag = colName;
+                        }
+                    }
+                }
+            }
+            
+            // If no selected cell with change, try to find last change from _changes
+            if (string.IsNullOrWhiteSpace(initialAttributeTag) && _changes.Count > 0)
+            {
+                var lastChange = _changes.Last();
+                initialValue = lastChange.Value;
+                initialBlockName = lastChange.Key.BlockName;
+                initialAttributeTag = lastChange.Key.AttributeTag;
+            }
+            
+            // Fallback to remembered values
+            if (string.IsNullOrWhiteSpace(initialAttributeTag))
+            {
+                initialValue = _lastApplyValue ?? "";
+                initialBlockName = _lastApplyBlockName ?? "";
+                initialAttributeTag = _lastApplyAttributeTag ?? "";
+            }
             
             var dlg = new ApplySimilarWindow(
                 initialValue,
@@ -738,6 +841,7 @@ namespace CadFilesUpdater.Windows
                 ? selectedScope
                 : _files.Select(f => f.FilePath).ToList();
 
+            // Apply changes (including empty value if field is empty)
             foreach (var fp in targetFiles)
             {
                 EnsureInstances(fp);
@@ -746,9 +850,14 @@ namespace CadFilesUpdater.Windows
                 {
                     if (!row.BlockName.Equals(dlg.SelectedBlockName, StringComparison.OrdinalIgnoreCase)) continue;
                     if (!row.Attributes.ContainsKey(dlg.SelectedAttributeTag)) continue;
-                    _changes[new BlockAnalyzer.ChangeKey(fp, row.BlockHandle, row.BlockName, dlg.SelectedAttributeTag)] = newValue;
+                    var key = new BlockAnalyzer.ChangeKey(fp, row.BlockHandle, row.BlockName, dlg.SelectedAttributeTag);
+                    // Always set value, even if empty (to clear the attribute)
+                    _changes[key] = newValue;
                 }
             }
+            
+            // Record undo state for bulk edit
+            RecordUndoState("Bulk edit: Apply to all attributes");
 
             RebuildGrid();
             UpdateSummaries();
@@ -789,7 +898,7 @@ namespace CadFilesUpdater.Windows
                 msg += "\n\nErrors:\n" + string.Join("\n", result.Errors.Select(e2 => $"{System.IO.Path.GetFileNameWithoutExtension(e2.FilePath)}: {e2.ErrorMessage}"));
             }
 
-            Activate();
+            // Don't activate window - let user stay in Cursor/other app
             MessageBox.Show(this, msg, "Save result", MessageBoxButton.OK,
                 result.FailedFiles == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
 
@@ -869,6 +978,11 @@ namespace CadFilesUpdater.Windows
                 // Requirement: if no blocks are selected, show nothing.
                 selectedFiles.Clear(); // avoids scanning
             }
+            
+            // Track file order for alternating colors
+            _fileOrder.Clear();
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
             foreach (var fp in selectedFiles)
             {
                 EnsureInstances(fp);
@@ -877,6 +991,13 @@ namespace CadFilesUpdater.Windows
                 {
                     if (!selectedBlocks.Contains(r.BlockName)) continue;
                     visibleRows.Add(r);
+                    
+                    // Track unique files in order they appear
+                    if (!seenFiles.Contains(r.FilePath))
+                    {
+                        seenFiles.Add(r.FilePath);
+                        _fileOrder.Add(r.FilePath);
+                    }
                 }
             }
 
@@ -919,12 +1040,339 @@ namespace CadFilesUpdater.Windows
 
             AttributesDataGrid.ItemsSource = _table.DefaultView;
             GridSummaryText.Text = $"{visibleRows.Count} row(s)";
+            
+            // Restore column display order if it was saved
+            RestoreColumnDisplayOrder();
+            
             RefreshAllGridCellStyles();
+        }
+
+        private void SaveColumnDisplayOrder()
+        {
+            _savedColumnOrder = new Dictionary<string, int>();
+            foreach (var col in AttributesDataGrid.Columns)
+            {
+                var colName = col.SortMemberPath ?? (col.Header?.ToString() ?? "");
+                if (!string.IsNullOrEmpty(colName))
+                {
+                    _savedColumnOrder[colName] = col.DisplayIndex;
+                }
+            }
+        }
+
+        private void RestoreColumnDisplayOrder()
+        {
+            if (_savedColumnOrder == null || _savedColumnOrder.Count == 0)
+                return;
+
+            // Wait for columns to be generated - use Render priority to ensure columns exist
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    if (AttributesDataGrid.Columns.Count == 0)
+                        return;
+
+                    // Build a list of columns with their saved DisplayIndex
+                    var columnsToReorder = new List<(DataGridColumn col, int displayIndex)>();
+                    
+                    foreach (var col in AttributesDataGrid.Columns)
+                    {
+                        var colName = col.SortMemberPath ?? (col.Header?.ToString() ?? "");
+                        if (!string.IsNullOrEmpty(colName) && _savedColumnOrder.TryGetValue(colName, out int savedIndex))
+                        {
+                            columnsToReorder.Add((col, savedIndex));
+                        }
+                    }
+
+                    if (columnsToReorder.Count == 0)
+                        return;
+
+                    // Sort by saved DisplayIndex and assign new DisplayIndex sequentially
+                    // This preserves relative order while handling removed/added columns
+                    var sorted = columnsToReorder.OrderBy(x => x.displayIndex).ToList();
+                    for (int i = 0; i < sorted.Count; i++)
+                    {
+                        sorted[i].col.DisplayIndex = i;
+                    }
+                }
+                catch
+                {
+                    // best-effort, ignore errors
+                }
+            }), System.Windows.Threading.DispatcherPriority.Render);
         }
 
         private void UpdateSummaries()
         {
             FilesSummaryText.Text = $"{_files.Count} file(s) loaded, {_files.Count(f => f.IsSelected)} selected";
+        }
+
+        private void MainWindow_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key == System.Windows.Input.Key.Z)
+            {
+                if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == System.Windows.Input.ModifierKeys.Control)
+                {
+                    if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == System.Windows.Input.ModifierKeys.Shift)
+                    {
+                        // Ctrl+Shift+Z = Redo
+                        if (RedoButton.IsEnabled)
+                        {
+                            Redo_Click(null, null);
+                            e.Handled = true;
+                        }
+                    }
+                    else
+                    {
+                        // Ctrl+Z = Undo
+                        if (UndoButton.IsEnabled)
+                        {
+                            Undo_Click(null, null);
+                            e.Handled = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        #region Undo/Redo
+
+        private void RecordUndoState(string description)
+        {
+            // Remove any history after current index (when user did undo and then made new change)
+            if (_undoHistoryIndex < _undoHistory.Count - 1)
+                _undoHistory.RemoveRange(_undoHistoryIndex + 1, _undoHistory.Count - _undoHistoryIndex - 1);
+
+            // Create deep copy snapshot of current changes
+            var snapshot = new ChangeSnapshot
+            {
+                Changes = new Dictionary<BlockAnalyzer.ChangeKey, string>(),
+                Description = description
+            };
+            foreach (var kv in _changes)
+                snapshot.Changes[kv.Key] = kv.Value;
+
+            _undoHistory.Add(snapshot);
+            _undoHistoryIndex = _undoHistory.Count - 1;
+
+            // Limit history size
+            if (_undoHistory.Count > MaxUndoHistory)
+            {
+                _undoHistory.RemoveAt(0);
+                _undoHistoryIndex--;
+            }
+
+            UpdateUndoRedoButtons();
+        }
+
+        private void Undo_Click(object sender, RoutedEventArgs e)
+        {
+            if (_undoHistoryIndex < 0) return;
+
+            _undoHistoryIndex--;
+            if (_undoHistoryIndex >= 0)
+            {
+                var snapshot = _undoHistory[_undoHistoryIndex];
+                _changes.Clear();
+                foreach (var kv in snapshot.Changes)
+                    _changes[kv.Key] = kv.Value;
+            }
+            else
+            {
+                _changes.Clear();
+            }
+
+            RebuildGrid();
+            UpdateUndoRedoButtons();
+        }
+
+        private void Redo_Click(object sender, RoutedEventArgs e)
+        {
+            if (_undoHistoryIndex >= _undoHistory.Count - 1) return;
+
+            _undoHistoryIndex++;
+            var snapshot = _undoHistory[_undoHistoryIndex];
+            _changes.Clear();
+            foreach (var kv in snapshot.Changes)
+                _changes[kv.Key] = kv.Value;
+
+            RebuildGrid();
+            UpdateUndoRedoButtons();
+        }
+
+        private void UpdateUndoRedoButtons()
+        {
+            UndoButton.IsEnabled = _undoHistoryIndex >= 0;
+            RedoButton.IsEnabled = _undoHistoryIndex < _undoHistory.Count - 1;
+        }
+
+        #endregion
+
+        #region Context Menu
+
+        private void AttributesDataGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            // Context menu is already defined in XAML, this handler can be used for dynamic updates if needed
+        }
+
+        private void ContextMenu_RevertAttribute_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedCells = AttributesDataGrid.SelectedCells;
+            if (selectedCells.Count == 0) return;
+
+            RecordUndoState("Revert attribute(s)");
+
+            var cellsToRevert = new HashSet<BlockAnalyzer.ChangeKey>();
+            foreach (var cell in selectedCells)
+            {
+                var drv = cell.Item as DataRowView;
+                if (drv == null) continue;
+
+                var filePath = drv.Row["FilePath"]?.ToString();
+                var handle = drv.Row["Handle"]?.ToString();
+                var blockName = drv.Row["BlockName"]?.ToString();
+                var colName = cell.Column?.SortMemberPath;
+
+                if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(handle) ||
+                    string.IsNullOrWhiteSpace(blockName) || string.IsNullOrWhiteSpace(colName))
+                    continue;
+
+                // Skip non-attribute columns
+                if (colName.Equals("File", StringComparison.OrdinalIgnoreCase) ||
+                    colName.Equals("LayoutOwner", StringComparison.OrdinalIgnoreCase) ||
+                    colName.Equals("BlockName", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                cellsToRevert.Add(new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName));
+            }
+
+            foreach (var key in cellsToRevert)
+                _changes.Remove(key);
+
+            RebuildGridPreservingScroll();
+            UpdateUndoRedoButtons();
+        }
+
+        private void ContextMenu_RevertBlock_Click(object sender, RoutedEventArgs e)
+        {
+            // Get cells from selection or current cell if nothing selected
+            var cells = AttributesDataGrid.SelectedCells;
+            if (cells.Count == 0 && AttributesDataGrid.CurrentCell.Item == null) return;
+
+            RecordUndoState("Revert block(s)");
+
+            // Collect block names to revert (across ALL files, not just the file from selected cell)
+            var blockNamesToRevert = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
+            // Process selected cells
+            foreach (var cellInfo in cells)
+            {
+                var drv = cellInfo.Item as DataRowView;
+                if (drv == null) continue;
+
+                var blockName = drv.Row["BlockName"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(blockName))
+                    blockNamesToRevert.Add(blockName);
+            }
+            
+            // If no selection but current cell exists, process it
+            if (cells.Count == 0 && AttributesDataGrid.CurrentCell.Item != null)
+            {
+                var drv = AttributesDataGrid.CurrentCell.Item as DataRowView;
+                if (drv != null)
+                {
+                    var blockName = drv.Row["BlockName"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(blockName))
+                        blockNamesToRevert.Add(blockName);
+                }
+            }
+
+            // Remove all changes for these block names across ALL files (ignoring handle and filePath)
+            var keysToRemove = _changes.Keys
+                .Where(k => blockNamesToRevert.Contains(k.BlockName))
+                .ToList();
+
+            foreach (var key in keysToRemove)
+                _changes.Remove(key);
+
+            RebuildGridPreservingScroll();
+            UpdateUndoRedoButtons();
+        }
+
+        private void ContextMenu_RevertFile_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedCells = AttributesDataGrid.SelectedCells;
+            if (selectedCells.Count == 0) return;
+
+            RecordUndoState("Revert file(s)");
+
+            var filesToRevert = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var cell in selectedCells)
+            {
+                var drv = cell.Item as DataRowView;
+                if (drv == null) continue;
+
+                var filePath = drv.Row["FilePath"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(filePath))
+                    filesToRevert.Add(filePath);
+            }
+
+            var keysToRemove = _changes.Keys
+                .Where(k => filesToRevert.Contains(k.FilePath))
+                .ToList();
+
+            foreach (var key in keysToRemove)
+                _changes.Remove(key);
+
+            RebuildGridPreservingScroll();
+            UpdateUndoRedoButtons();
+        }
+
+        #endregion
+
+        private void RebuildGridPreservingScroll()
+        {
+            // Save scroll position
+            var scrollViewer = FindVisualChild<ScrollViewer>(AttributesDataGrid);
+            double? savedVerticalOffset = null;
+            double? savedHorizontalOffset = null;
+            if (scrollViewer != null)
+            {
+                savedVerticalOffset = scrollViewer.VerticalOffset;
+                savedHorizontalOffset = scrollViewer.HorizontalOffset;
+            }
+
+            // Save column display order before rebuilding
+            SaveColumnDisplayOrder();
+
+            RebuildGrid();
+
+            // Restore scroll position after rebuild
+            if (scrollViewer != null && savedVerticalOffset.HasValue)
+            {
+                // Use BeginInvoke to restore after grid is rendered
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    var sv = FindVisualChild<ScrollViewer>(AttributesDataGrid);
+                    if (sv != null)
+                    {
+                        sv.ScrollToVerticalOffset(savedVerticalOffset.Value);
+                        if (savedHorizontalOffset.HasValue)
+                            sv.ScrollToHorizontalOffset(savedHorizontalOffset.Value);
+                    }
+                    // Refresh styles after scroll position is restored to ensure all cells are styled
+                    RefreshAllGridCellStyles();
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+            else
+            {
+                // If no scroll position to restore, still refresh styles after a delay
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    RefreshAllGridCellStyles();
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
         }
     }
 }
