@@ -196,6 +196,11 @@
                       HeadersVisibility="Column"
                       RowHeaderWidth="0"
                       SelectionChanged="FilesListView_SelectionChanged">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
                 <DataGrid.ContextMenu>
                     <ContextMenu>
                         <MenuItem Header="Remove" Click="RemoveFiles_Click"/>
@@ -268,11 +273,14 @@
                       CanUserAddRows="False"
                       CanUserDeleteRows="False"
                       IsReadOnly="False"
+                      FrozenColumnCount="3"
                       BeginningEdit="AttributesDataGrid_BeginningEdit"
                       CellEditEnding="AttributesDataGrid_CellEditEnding"
                       LoadingRow="AttributesDataGrid_LoadingRow"
                       AutoGeneratingColumn="AttributesDataGrid_AutoGeneratingColumn"
+                      Sorting="AttributesDataGrid_Sorting"
                       ScrollViewer.ScrollChanged="AttributesDataGrid_ScrollChanged"
+                      PreviewKeyDown="AttributesDataGrid_PreviewKeyDown"
                       HeadersVisibility="All"
                       GridLinesVisibility="All"
                       AlternatingRowBackground="#FFF7F7F7"
@@ -280,11 +288,21 @@
                       ContextMenuOpening="AttributesDataGrid_ContextMenuOpening"
                       SelectionMode="Extended"
                       SelectionUnit="Cell">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
                         <Setter Property="BorderThickness" Value="0"/>
                         <Setter Property="Padding" Value="4,2"/>
                         <Style.Triggers>
+                            <!-- Selected cell: blue frame -->
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter Property="BorderBrush" Value="#2563EB"/>
+                                <Setter Property="BorderThickness" Value="2"/>
+                            </Trigger>
                             <!-- Focused cell: blue border -->
                             <Trigger Property="IsFocused" Value="True">
                                 <Setter Property="BorderBrush" Value="#0078D4"/>
@@ -295,12 +313,11 @@
                                 <Setter Property="BorderBrush" Value="#0078D4"/>
                                 <Setter Property="BorderThickness" Value="2"/>
                             </Trigger>
-                            <!-- N/A cells: yellow + disabled -->
+                            <!-- N/A cells: yellow (non-editable via BeginningEdit) -->
                             <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="N/A">
                                 <Setter Property="Background" Value="#FEF9C3"/>
                                 <Setter Property="Foreground" Value="Gray"/>
                                 <Setter Property="FontStyle" Value="Italic"/>
-                                <Setter Property="IsEnabled" Value="False"/>
                                 <Setter Property="ToolTip" Value="Attribute not present in this block"/>
                             </DataTrigger>
                         </Style.Triggers>
@@ -333,12 +350,12 @@
                     </StackPanel>
                 </Button>
 
-                <Button Click="SaveChanges_Click"
+                <Button Click="ExportToExcel_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" Margin="0,0,8,0" Foreground="#C026D3"/>
-                        <TextBlock Text="Save changes"/>
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C5;" Margin="0,0,8,0" Foreground="#107C10"/>
+                        <TextBlock Text="Export to Excel"/>
                     </StackPanel>
                 </Button>
 
@@ -364,26 +381,16 @@
                     </StackPanel>
                 </Button>
 
-                <TextBlock x:Name="GridSummaryText" DockPanel.Dock="Right" Foreground="Gray" VerticalAlignment="Center" Margin="10,0,0,0"/>
-            </DockPanel>
-
-            <DockPanel Grid.Row="2" Margin="0,10,0,0" LastChildFill="False">
-                <Button Click="ExportAllToExcel_Click"
+                <Button Click="SaveChanges_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C5;" Margin="0,0,8,0" Foreground="#107C10"/>
-                        <TextBlock Text="Export all blocks to Excel"/>
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74E;" Margin="0,0,8,0" Foreground="#C026D3"/>
+                        <TextBlock Text="Save changes"/>
                     </StackPanel>
                 </Button>
 
-                <Button Click="ExportSelectedToExcel_Click"
-                        Style="{StaticResource BottomActionButtonStyle}">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C5;" Margin="0,0,8,0" Foreground="#107C10"/>
-                        <TextBlock Text="Export selected to Excel"/>
-                    </StackPanel>
-                </Button>
+                <TextBlock x:Name="GridSummaryText" DockPanel.Dock="Right" Foreground="Gray" VerticalAlignment="Center" Margin="10,0,0,0"/>
             </DockPanel>
         </Grid>
 
