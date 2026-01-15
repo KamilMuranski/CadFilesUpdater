@@ -46,6 +46,13 @@
             <Setter Property="MinWidth" Value="100"/>
         </Style>
 
+        <Style x:Key="SplitButtonPartStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="Padding" Value="10,6"/>
+        </Style>
+
         <!-- Bottom-right action buttons (bigger than the rest) -->
         <Style x:Key="BottomActionButtonStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
             <Setter Property="Padding" Value="18,10"/>
@@ -99,12 +106,40 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <Button Grid.Row="0" Grid.Column="0" Click="AddFiles_Click" Style="{StaticResource IconButtonStyle}" Margin="0,0,10,8">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE710;" Margin="0,0,8,0" Foreground="#16A34A"/>
-                            <TextBlock Text="Add"/>
-                        </StackPanel>
-                    </Button>
+                    <Border Grid.Row="0" Grid.Column="0"
+                            Margin="0,0,10,8"
+                            Background="White"
+                            BorderBrush="#E0E0E0"
+                            BorderThickness="1"
+                            CornerRadius="4">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="1"/>
+                                <ColumnDefinition Width="36"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Click="AddFiles_Click" Style="{StaticResource SplitButtonPartStyle}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE710;" Margin="0,0,8,0" Foreground="#16A34A"/>
+                                    <TextBlock Text="Add"/>
+                                </StackPanel>
+                            </Button>
+                            <Border Grid.Column="1" Background="#E0E0E0"/>
+                            <Button x:Name="AddOptionsButton"
+                                    Grid.Column="2"
+                                    Click="AddOptions_Click"
+                                    Style="{StaticResource SplitButtonPartStyle}">
+                                <TextBlock Text="+" FontWeight="Bold" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                <Button.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Add drawings" Click="AddDrawingsMenu_Click"/>
+                                        <MenuItem Header="Add folders" Click="AddFolders_Click"/>
+                                        <MenuItem Header="Open all opened drawings" Click="AddOpenedDrawings_Click"/>
+                                    </ContextMenu>
+                                </Button.ContextMenu>
+                            </Button>
+                        </Grid>
+                    </Border>
                     <Button Grid.Row="0" Grid.Column="1" Click="RemoveFiles_Click" Style="{StaticResource IconButtonStyle}" Margin="10,0,0,8">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74D;" Margin="0,0,8,0" Foreground="#DC2626"/>

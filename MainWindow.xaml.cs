@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -200,11 +201,81 @@ namespace CadFilesUpdater.Windows
 
             if (dialog.ShowDialog() != true) return;
 
+            AddFilesFromPaths(dialog.FileNames);
+        }
+
+        private void AddOptions_Click(object sender, RoutedEventArgs e)
+        {
+            var btn = sender as Button;
+            if (btn?.ContextMenu == null) return;
+            btn.ContextMenu.PlacementTarget = btn;
+            btn.ContextMenu.IsOpen = true;
+        }
+
+        private void AddDrawingsMenu_Click(object sender, RoutedEventArgs e)
+        {
+            AddFiles_Click(sender, e);
+        }
+
+        private void AddFolders_Click(object sender, RoutedEventArgs e)
+        {
+            var includeSubfolders = MessageBox.Show(
+                "Do you want to include subfolders?",
+                "Add folders",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+            if (includeSubfolders == MessageBoxResult.Cancel) return;
+
+            using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
+            {
+                dialog.Description = "Select folder with DWG files";
+                dialog.ShowNewFolderButton = false;
+                if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+
+                var option = includeSubfolders == MessageBoxResult.Yes
+                    ? SearchOption.AllDirectories
+                    : SearchOption.TopDirectoryOnly;
+
+                var files = Directory.EnumerateFiles(dialog.SelectedPath, "*.dwg", option).ToList();
+                if (files.Count == 0)
+                {
+                    MessageBox.Show("No DWG files found in the selected folder.",
+                        "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                AddFilesFromPaths(files);
+            }
+        }
+
+        private void AddOpenedDrawings_Click(object sender, RoutedEventArgs e)
+        {
+            var docManager = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
+            var files = new List<string>();
+            foreach (Document d in docManager)
+            {
+                if (!string.IsNullOrWhiteSpace(d.Name) && File.Exists(d.Name))
+                    files.Add(d.Name);
+            }
+
+            if (files.Count == 0)
+            {
+                MessageBox.Show("No opened drawings with a valid file path were found.",
+                    "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            AddFilesFromPaths(files);
+        }
+
+        private void AddFilesFromPaths(IEnumerable<string> filePaths)
+        {
             var existing = new HashSet<string>(_files.Select(f => f.FilePath), StringComparer.OrdinalIgnoreCase);
             var addedAny = false;
-            foreach (var fp in dialog.FileNames)
+            foreach (var fp in filePaths)
             {
-                if (existing.Contains(fp)) continue;
+                if (string.IsNullOrWhiteSpace(fp) || existing.Contains(fp)) continue;
                 _files.Add(new FileEntry { FilePath = fp, IsSelected = true });
                 addedAny = true;
             }
@@ -1451,7 +1522,7 @@ namespace CadFilesUpdater.Windows
                         this.WindowState = System.Windows.WindowState.Minimized;
                         return;
                     }
-                    catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                    catch (Autodesk.AutoCAD.Runtime.Exception)
                     {
                         // Fallback to command below.
                     }
@@ -1481,7 +1552,6 @@ namespace CadFilesUpdater.Windows
                 }
                 else
                 {
-                    LogOpenInAutoCad("No active document available to send OPEN command.");
                     MessageBox.Show("No active AutoCAD document available to open the file.", "AutoCAD", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
             }
