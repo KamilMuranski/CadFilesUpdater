@@ -77,9 +77,9 @@
 
     <Grid Margin="10">
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="320"/>
-            <ColumnDefinition Width="10"/>
-            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="380" MinWidth="360" MaxWidth="900"/>
+            <ColumnDefinition Width="6"/>
+            <ColumnDefinition Width="*" MinWidth="400"/>
         </Grid.ColumnDefinitions>
 
         <!-- LEFT PANEL -->
@@ -102,11 +102,13 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <Border Grid.Row="0" Grid.Column="0"
+                            Width="165"
+                            HorizontalAlignment="Left"
                             Margin="0,0,10,8"
                             Background="White"
                             BorderBrush="#E0E0E0"
@@ -140,7 +142,12 @@
                             </Button>
                         </Grid>
                     </Border>
-                    <Button Grid.Row="0" Grid.Column="1" Click="RemoveFiles_Click" Style="{StaticResource IconButtonStyle}" Margin="10,0,0,8">
+                    <Button Grid.Row="0" Grid.Column="1"
+                            Width="165"
+                            HorizontalAlignment="Left"
+                            Click="RemoveFiles_Click"
+                            Style="{StaticResource IconButtonStyle}"
+                            Margin="10,0,0,8">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE74D;" Margin="0,0,8,0" Foreground="#DC2626"/>
                             <TextBlock Text="Remove selected"/>
@@ -148,24 +155,29 @@
                     </Button>
 
                     <!-- Row 1: Reload + one free slot (we may add another button later) -->
-                    <Button Grid.Column="0" Click="ReloadFiles_Click" Style="{StaticResource IconButtonStyle}" Margin="0,29,10,29" Grid.RowSpan="3">
+                    <Button Grid.Column="0"
+                            Width="165"
+                            HorizontalAlignment="Left"
+                            Click="ReloadFiles_Click"
+                            Style="{StaticResource IconButtonStyle}"
+                            Margin="0,29,10,29"
+                            Grid.RowSpan="3">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE72C;" Margin="0,0,8,0" Foreground="#16A34A"/>
                             <TextBlock Text="Reload"/>
                         </StackPanel>
                     </Button>
 
-                    <!-- Row 2: Select/Unselect -->
-                    <Button Grid.Row="2" Grid.Column="0" Click="SelectAllFiles_Click" Style="{StaticResource IconButtonStyle}" Margin="0,28,10,0">
+                    <!-- Row 2: All files -->
+                    <Button Grid.Row="2" Grid.Column="0"
+                            Width="165"
+                            HorizontalAlignment="Left"
+                            Click="AllFiles_Click"
+                            Style="{StaticResource IconButtonStyle}"
+                            Margin="0,28,10,0">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,8,0" Foreground="#2563EB"/>
-                            <TextBlock Text="Select all"/>
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="2" Grid.Column="1" Click="UnselectAllFiles_Click" Style="{StaticResource IconButtonStyle}" Margin="10,28,0,0">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,8,0" Foreground="#6B7280"/>
-                            <TextBlock Text="Unselect all"/>
+                            <TextBlock Text="All files"/>
                         </StackPanel>
                     </Button>
                 </Grid>
@@ -173,20 +185,29 @@
                 <TextBlock x:Name="FilesSummaryText" Text="0 file(s) loaded" Margin="0,0,0,0" Foreground="Gray"/>
             </StackPanel>
 
-            <ListView x:Name="FilesListView" Grid.Row="1" Margin="0,8,0,0"
+            <DataGrid x:Name="FilesListView"
+                      Grid.Row="1"
+                      Margin="0,8,0,0"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      CanUserDeleteRows="False"
+                      CanUserResizeColumns="True"
                       SelectionMode="Extended"
-                      ItemContainerStyle="{StaticResource ListViewItemClickableStyle}"
-                      PreviewMouseLeftButtonDown="FilesListView_PreviewMouseLeftButtonDown">
-                <ListView.ItemTemplate>
-                    <DataTemplate>
-                        <DockPanel LastChildFill="True">
-                            <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center" Margin="0,0,8,0"
-                                      Checked="FilesSelectionChanged" Unchecked="FilesSelectionChanged"/>
-                            <TextBlock Text="{Binding FilePath, Converter={StaticResource FileNameConverter}}" VerticalAlignment="Center"/>
-                        </DockPanel>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+                      HeadersVisibility="Column"
+                      RowHeaderWidth="0"
+                      SelectionChanged="FilesListView_SelectionChanged">
+                <DataGrid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Remove" Click="RemoveFiles_Click"/>
+                        <MenuItem Header="Open file in AutoCAD" Click="FilesContext_OpenInAutoCAD_Click"/>
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Drawing" Binding="{Binding FilePath, Converter={StaticResource FileNameConverter}}" Width="140"/>
+                    <DataGridTextColumn Header="Blocks w/ attrs" Binding="{Binding BlocksWithAttributes}" Width="SizeToHeader"/>
+                    <DataGridTextColumn Header="Path" Binding="{Binding FilePath}" Width="*"/>
+                </DataGrid.Columns>
+            </DataGrid>
 
             <!-- Blocks -->
             <StackPanel Grid.Row="3" Orientation="Vertical">
@@ -194,53 +215,44 @@
 
                 <Grid Margin="0,0,0,6">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="6"/>
-                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <Button Grid.Column="0"
-                            Click="SelectAllBlocks_Click"
+                            Click="AllBlocks_Click"
                             Style="{StaticResource IconButtonStyle}"
-                            Width="150"
-                            Margin="0"
+                            Width="165"
+                            Margin="0,0,10,0"
                             HorizontalAlignment="Left"
                             VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,6,0" Foreground="#2563EB"/>
-                            <TextBlock Text="Select all"/>
-                        </StackPanel>
-                    </Button>
-
-                    <Button Grid.Column="2"
-                            Click="UnselectAllBlocks_Click"
-                            Style="{StaticResource IconButtonStyle}"
-                            Width="150"
-                            Margin="0"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,6,0" Foreground="#6B7280"/>
-                            <TextBlock Text="Unselect all"/>
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,8,0" Foreground="#2563EB"/>
+                            <TextBlock Text="All blocks"/>
                         </StackPanel>
                     </Button>
                 </Grid>
             </StackPanel>
 
             <ListView x:Name="BlocksListView" Grid.Row="4" Margin="0,8,0,0" SelectionMode="Extended"
-                      ItemContainerStyle="{StaticResource ListViewItemClickableStyle}"
-                      PreviewMouseLeftButtonDown="BlocksListView_PreviewMouseLeftButtonDown">
+                      SelectionChanged="BlocksListView_SelectionChanged"
+                      ItemContainerStyle="{StaticResource ListViewItemClickableStyle}">
                 <ListView.ItemTemplate>
                     <DataTemplate>
-                        <DockPanel LastChildFill="True">
-                            <CheckBox IsChecked="{Binding IsSelected}" VerticalAlignment="Center" Margin="0,0,8,0"
-                                      Checked="BlocksSelectionChanged" Unchecked="BlocksSelectionChanged"/>
-                            <TextBlock Text="{Binding BlockName}" VerticalAlignment="Center"/>
-                        </DockPanel>
+                        <TextBlock Text="{Binding BlockName}" VerticalAlignment="Center"/>
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
         </Grid>
+
+        <!-- Splitter -->
+        <GridSplitter Grid.Column="1"
+                      Width="6"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Stretch"
+                      Background="#E5E7EB"
+                      ResizeBehavior="PreviousAndNext"/>
 
         <!-- RIGHT PANEL -->
         <Grid Grid.Column="2">
@@ -265,10 +277,24 @@
                       GridLinesVisibility="All"
                       AlternatingRowBackground="#FFF7F7F7"
                       RowBackground="White"
-                      ContextMenuOpening="AttributesDataGrid_ContextMenuOpening">
+                      ContextMenuOpening="AttributesDataGrid_ContextMenuOpening"
+                      SelectionMode="Extended"
+                      SelectionUnit="Cell">
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Padding" Value="4,2"/>
                         <Style.Triggers>
+                            <!-- Focused cell: blue border -->
+                            <Trigger Property="IsFocused" Value="True">
+                                <Setter Property="BorderBrush" Value="#0078D4"/>
+                                <Setter Property="BorderThickness" Value="2"/>
+                            </Trigger>
+                            <!-- Keyboard focus within cell -->
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter Property="BorderBrush" Value="#0078D4"/>
+                                <Setter Property="BorderThickness" Value="2"/>
+                            </Trigger>
                             <!-- N/A cells: yellow + disabled -->
                             <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="N/A">
                                 <Setter Property="Background" Value="#FEF9C3"/>
@@ -281,10 +307,16 @@
                     </Style>
                 </DataGrid.CellStyle>
                 <DataGrid.ContextMenu>
-                    <ContextMenu>
-                        <MenuItem Header="Revert this attribute" Click="ContextMenu_RevertAttribute_Click"/>
+                    <ContextMenu x:Name="AttributesContextMenu" Opened="AttributesDataGrid_ContextMenuOpening">
+                        <MenuItem x:Name="ContextMenu_RestoreCell" Header="Restore original value in this cell" Click="ContextMenu_RevertAttribute_Click"/>
                         <MenuItem Header="Revert all changes for this block" Click="ContextMenu_RevertBlock_Click"/>
                         <MenuItem Header="Revert all changes for this file" Click="ContextMenu_RevertFile_Click"/>
+                        <Separator/>
+                        <MenuItem x:Name="ContextMenu_ApplySimilar" Header="Apply this value to all similar attributes" Click="ContextMenu_ApplySimilar_Click"/>
+                        <Separator/>
+                        <MenuItem x:Name="ContextMenu_Copy" Header="Copy" Click="ContextMenu_CopyCell_Click"/>
+                        <MenuItem x:Name="ContextMenu_Paste" Header="Paste" Click="ContextMenu_PasteCell_Click"/>
+                        <MenuItem x:Name="ContextMenu_Delete" Header="Delete cell's content" Click="ContextMenu_DeleteCell_Click"/>
                         <Separator/>
                         <MenuItem Header="Open file in AutoCAD" Click="ContextMenu_OpenInAutoCAD_Click"/>
                     </ContextMenu>

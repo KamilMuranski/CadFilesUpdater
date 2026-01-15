@@ -7,6 +7,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Autodesk.AutoCAD.ApplicationServices;
@@ -17,10 +18,51 @@ namespace CadFilesUpdater.Windows
 {
     public partial class MainWindow : System.Windows.Window
     {
-        private sealed class FileEntry
+        private sealed class FileEntry : System.ComponentModel.INotifyPropertyChanged
         {
-            public string FilePath { get; set; }
-            public bool IsSelected { get; set; }
+            private string _filePath;
+            private bool _isSelected;
+            private int _blocksWithAttributes;
+
+            public string FilePath
+            {
+                get => _filePath;
+                set
+                {
+                    if (_filePath == value) return;
+                    _filePath = value;
+                    OnPropertyChanged(nameof(FilePath));
+                }
+            }
+
+            public bool IsSelected
+            {
+                get => _isSelected;
+                set
+                {
+                    if (_isSelected == value) return;
+                    _isSelected = value;
+                    OnPropertyChanged(nameof(IsSelected));
+                }
+            }
+
+            public int BlocksWithAttributes
+            {
+                get => _blocksWithAttributes;
+                set
+                {
+                    if (_blocksWithAttributes == value) return;
+                    _blocksWithAttributes = value;
+                    OnPropertyChanged(nameof(BlocksWithAttributes));
+                }
+            }
+
+            public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+
+            private void OnPropertyChanged(string propertyName)
+            {
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+            }
         }
 
         private sealed class BlockEntry
@@ -69,15 +111,15 @@ namespace CadFilesUpdater.Windows
         private DataTable _table;
         // Track file order for alternating colors in non-editable columns
         private readonly List<string> _fileOrder = new List<string>();
-        private int? _lastFileClickIndex;
         private int? _lastBlockClickIndex;
-        private bool? _lastFileRangeState;
         private bool? _lastBlockRangeState;
         private bool _suppressSelectionEvents;
         private System.Windows.Threading.DispatcherTimer _refreshTimer;
         private bool _refreshBlocks;
         private bool _refreshGrid;
         private System.Windows.Threading.DispatcherTimer _gridStyleRefreshTimer;
+        private bool _allFilesSelected = true;
+        private bool _allBlocksSelected = true;
 
         public MainWindow()
         {
@@ -273,10 +315,13 @@ namespace CadFilesUpdater.Windows
         {
             var existing = new HashSet<string>(_files.Select(f => f.FilePath), StringComparer.OrdinalIgnoreCase);
             var addedAny = false;
+            var newlyAdded = new List<FileEntry>();
             foreach (var fp in filePaths)
             {
                 if (string.IsNullOrWhiteSpace(fp) || existing.Contains(fp)) continue;
-                _files.Add(new FileEntry { FilePath = fp, IsSelected = true });
+                var entry = new FileEntry { FilePath = fp, IsSelected = false, BlocksWithAttributes = 0 };
+                _files.Add(entry);
+                newlyAdded.Add(entry);
                 addedAny = true;
             }
 
@@ -298,22 +343,26 @@ namespace CadFilesUpdater.Windows
             {
                 SetBusy(false, null);
             }
+
+            if (!_allFilesSelected && newlyAdded.Count > 0)
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    foreach (var entry in newlyAdded)
+                        FilesListView.SelectedItems.Add(entry);
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
         }
 
         private void RemoveFiles_Click(object sender, RoutedEventArgs e)
         {
-            // Get selected files - check both SelectedItems and IsSelected property
-            var toRemove = _files.Where(f => f.IsSelected).ToList();
-            if (toRemove.Count == 0)
-            {
-                // Fallback: try SelectedItems if nothing is selected via IsSelected
-                toRemove = FilesListView.SelectedItems.Cast<FileEntry>().ToList();
-            }
+            var toRemove = _allFilesSelected
+                ? _files.ToList()
+                : FilesListView.SelectedItems.Cast<FileEntry>().ToList();
             
             if (toRemove.Count == 0) return;
 
-            // Record undo state before removing
-            RecordUndoState("Remove files", removedFiles: toRemove.Select(f => f.FilePath).ToList());
+            EnsureUndoBaseline();
 
             foreach (var fe in toRemove)
             {
@@ -326,109 +375,42 @@ namespace CadFilesUpdater.Windows
             var keysToRemove = _changes.Keys.Where(k => removedPaths.Contains(k.FilePath)).ToList();
             foreach (var k in keysToRemove) _changes.Remove(k);
 
+            // Record undo state after removing
+            RecordUndoState("Remove files", removedFiles: toRemove.Select(f => f.FilePath).ToList());
+
             RebuildBlocksList();
             RebuildGrid();
             UpdateSummaries();
             UpdateUndoRedoButtons();
+
+            if (FilesListView.SelectedItems.Count == 0)
+            {
+                _allFilesSelected = true;
+                RebuildBlocksList();
+                RebuildGrid();
+                UpdateSummaries();
+            }
         }
 
-        private void SelectAllFiles_Click(object sender, RoutedEventArgs e)
+        private void AllFiles_Click(object sender, RoutedEventArgs e)
         {
-            foreach (var f in _files) f.IsSelected = true;
-            FilesListView.Items.Refresh();
-
+            _allFilesSelected = true;
+            FilesListView.SelectedItems.Clear();
             EnsureInstancesForSelectedFiles();
             RebuildBlocksList();
             RebuildGrid();
             UpdateSummaries();
         }
 
-        private void UnselectAllFiles_Click(object sender, RoutedEventArgs e)
+        private void FilesListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            foreach (var f in _files) f.IsSelected = false;
-            FilesListView.Items.Refresh();
+            if (FilesListView.SelectedItems.Count > 0)
+                _allFilesSelected = false;
 
-            // No files selected => empty blocks and grid
-            _blocks.Clear();
-            BlocksListView.Items.Refresh();
-            RebuildGrid();
-            UpdateSummaries();
-        }
-
-        private void FilesSelectionChanged(object sender, RoutedEventArgs e)
-        {
-            if (_suppressSelectionEvents) return;
-
-            // If this came from a checkbox click, support Shift-range selection too.
-            var cb = sender as CheckBox;
-            if (cb != null)
-            {
-                var lvi = ItemsControl.ContainerFromElement(FilesListView, cb) as ListViewItem;
-                var idx = lvi != null ? FilesListView.ItemContainerGenerator.IndexFromContainer(lvi) : -1;
-                var isShift = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == System.Windows.Input.ModifierKeys.Shift;
-                var entry = lvi != null ? (lvi.DataContext as FileEntry) : null;
-                var currentState = entry != null && entry.IsSelected;
-
-                if (isShift && _lastFileClickIndex.HasValue && _lastFileRangeState.HasValue && idx >= 0)
-                {
-                    int start = Math.Min(_lastFileClickIndex.Value, idx);
-                    int end = Math.Max(_lastFileClickIndex.Value, idx);
-                    try
-                    {
-                        _suppressSelectionEvents = true;
-                        for (int i = start; i <= end && i < _files.Count; i++)
-                            _files[i].IsSelected = _lastFileRangeState.Value;
-                        FilesListView.Items.Refresh();
-                    }
-                    finally
-                    {
-                        _suppressSelectionEvents = false;
-                    }
-                }
-                if (idx >= 0)
-                {
-                    if (!isShift)
-                        _lastFileRangeState = currentState;
-                    _lastFileClickIndex = idx;
-                }
-            }
-
-            // Avoid heavy work on every click; just schedule refresh.
             ScheduleRefresh(blocks: true, grid: true);
         }
 
-        private void FilesListView_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        {
-            if (IsClickInsideCheckBox(e.OriginalSource as DependencyObject)) return;
-
-            var lvi = FindAncestor<ListViewItem>(e.OriginalSource as DependencyObject);
-            if (lvi == null) return;
-
-            var entry = lvi.DataContext as FileEntry;
-            if (entry == null) return;
-
-            var idx = FilesListView.ItemContainerGenerator.IndexFromContainer(lvi);
-            var isShift = (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == System.Windows.Input.ModifierKeys.Shift;
-
-            if (isShift && _lastFileClickIndex.HasValue && idx >= 0)
-            {
-                int start = Math.Min(_lastFileClickIndex.Value, idx);
-                int end = Math.Max(_lastFileClickIndex.Value, idx);
-                var desired = _lastFileRangeState ?? true;
-                for (int i = start; i <= end && i < _files.Count; i++)
-                    _files[i].IsSelected = desired; // shift-click = select/unselect range based on anchor
-            }
-            else
-            {
-                entry.IsSelected = !entry.IsSelected;
-                _lastFileRangeState = entry.IsSelected;
-            }
-
-            if (idx >= 0) _lastFileClickIndex = idx;
-            FilesListView.Items.Refresh();
-            ScheduleRefresh(blocks: true, grid: true);
-            e.Handled = true;
-        }
+        // Selection is handled by the DataGrid; we only react in SelectionChanged.
 
         private void BlocksListView_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
@@ -461,6 +443,21 @@ namespace CadFilesUpdater.Windows
             BlocksListView.Items.Refresh();
             ScheduleRefresh(blocks: false, grid: true);
             e.Handled = true;
+        }
+
+        private void BlocksListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (BlocksListView.SelectedItems.Count > 0)
+                _allBlocksSelected = false;
+
+            ScheduleRefresh(blocks: false, grid: true);
+        }
+
+        private void AllBlocks_Click(object sender, RoutedEventArgs e)
+        {
+            _allBlocksSelected = true;
+            BlocksListView.SelectedItems.Clear();
+            ScheduleRefresh(blocks: true, grid: true);
         }
 
         private static bool IsClickInsideCheckBox(DependencyObject d)
@@ -609,7 +606,25 @@ namespace CadFilesUpdater.Windows
                 e.Column.IsReadOnly = true;
             }
             else
+            {
+                // Attribute columns: set header and ensure value is visible
                 e.Column.Header = e.PropertyName; // attribute tag
+                
+                if (e.Column is DataGridTextColumn textColumn)
+                {
+                    // Set ElementStyle to ensure value is always visible (even when selected)
+                    var elementStyle = new Style(typeof(TextBlock));
+                    elementStyle.Setters.Add(new Setter(TextBlock.PaddingProperty, new Thickness(4, 2, 4, 2)));
+                    elementStyle.Setters.Add(new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
+                    textColumn.ElementStyle = elementStyle;
+                    
+                    // Set EditingElementStyle to show value during editing
+                    var editingStyle = new Style(typeof(TextBox));
+                    editingStyle.Setters.Add(new Setter(TextBox.BorderThicknessProperty, new Thickness(0)));
+                    editingStyle.Setters.Add(new Setter(TextBox.PaddingProperty, new Thickness(4, 2, 4, 2)));
+                    textColumn.EditingElementStyle = editingStyle;
+                }
+            }
         }
 
         private void AttributesDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
@@ -663,7 +678,16 @@ namespace CadFilesUpdater.Windows
             var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
             // If user typed the same value as original, don't keep it as a "changed" cell.
             var original = GetOriginalAttributeValue(filePath, handle, colName);
-            if (string.Equals(original ?? "", newValue ?? "", StringComparison.Ordinal))
+            var isSameAsOriginal = string.Equals(original ?? "", newValue ?? "", StringComparison.Ordinal);
+            var hadChange = _changes.TryGetValue(key, out var existingValue);
+            var willChange = isSameAsOriginal
+                ? hadChange
+                : (!hadChange || !string.Equals(existingValue ?? "", newValue ?? "", StringComparison.Ordinal));
+
+            if (willChange)
+                EnsureUndoBaseline();
+
+            if (isSameAsOriginal)
                 _changes.Remove(key);
             else
                 _changes[key] = newValue;
@@ -676,7 +700,8 @@ namespace CadFilesUpdater.Windows
             };
             
             // Record undo state for single cell edit
-            RecordUndoState("Edit cell");
+            if (willChange)
+                RecordUndoState("Edit cell");
 
             RefreshGridCellStylesForRow(e.Row);
         }
@@ -790,7 +815,7 @@ namespace CadFilesUpdater.Windows
                     {
                         // Normal editable cell: white background
                         cell.Background = Brushes.White;
-                        cell.ClearValue(DataGridCell.ForegroundProperty);
+                        cell.Foreground = Brushes.Black;
                         cell.ClearValue(DataGridCell.FontStyleProperty);
                     }
                 }
@@ -928,6 +953,8 @@ namespace CadFilesUpdater.Windows
                 : _files.Select(f => f.FilePath).ToList();
 
             // Apply changes (including empty value if field is empty)
+            bool anyChange = false;
+            bool baselineEnsured = false;
             foreach (var fp in targetFiles)
             {
                 EnsureInstances(fp);
@@ -938,12 +965,24 @@ namespace CadFilesUpdater.Windows
                     if (!row.Attributes.ContainsKey(dlg.SelectedAttributeTag)) continue;
                     var key = new BlockAnalyzer.ChangeKey(fp, row.BlockHandle, row.BlockName, dlg.SelectedAttributeTag);
                     // Always set value, even if empty (to clear the attribute)
-                    _changes[key] = newValue;
+                    var hadChange = _changes.TryGetValue(key, out var existingValue);
+                    var willChange = !hadChange || !string.Equals(existingValue ?? "", newValue ?? "", StringComparison.Ordinal);
+                    if (willChange)
+                    {
+                        if (!baselineEnsured)
+                        {
+                            EnsureUndoBaseline();
+                            baselineEnsured = true;
+                        }
+                        _changes[key] = newValue;
+                        anyChange = true;
+                    }
                 }
             }
             
             // Record undo state for bulk edit
-            RecordUndoState("Bulk edit: Apply to all attributes");
+            if (anyChange)
+                RecordUndoState("Bulk edit: Apply to all attributes");
 
             RebuildGrid();
             UpdateSummaries();
@@ -1010,22 +1049,38 @@ namespace CadFilesUpdater.Windows
             {
                 var rows = BlockAnalyzer.AnalyzeAttributeInstances(filePath);
                 _instancesByFile[filePath] = rows;
+                var entry = _files.FirstOrDefault(f => string.Equals(f.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+                if (entry != null)
+                    entry.BlocksWithAttributes = rows?.Count ?? 0;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[MainWindow] AnalyzeAttributeInstances error: {filePath}: {ex.Message}");
                 _instancesByFile[filePath] = new List<BlockAnalyzer.AttributeInstanceRow>();
+                var entry = _files.FirstOrDefault(f => string.Equals(f.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+                if (entry != null)
+                    entry.BlocksWithAttributes = 0;
             }
         }
 
         private List<string> GetSelectedFilePaths()
         {
-            return _files.Where(f => f.IsSelected).Select(f => f.FilePath).ToList();
+            if (_allFilesSelected)
+                return _files.Select(f => f.FilePath).ToList();
+
+            return FilesListView.SelectedItems.Cast<FileEntry>()
+                .Select(f => f.FilePath)
+                .ToList();
         }
 
         private HashSet<string> GetSelectedBlocks()
         {
-            return _blocks.Where(b => b.IsSelected).Select(b => b.BlockName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (_allBlocksSelected)
+                return _blocks.Select(b => b.BlockName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            return BlocksListView.SelectedItems.Cast<BlockEntry>()
+                .Select(b => b.BlockName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
         private void RebuildBlocksList()
@@ -1039,16 +1094,10 @@ namespace CadFilesUpdater.Windows
                 foreach (var r in rows) blockNames.Add(r.BlockName);
             }
 
-            var oldSelected = _blocks.Where(b => b.IsSelected).Select(b => b.BlockName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var oldUnselected = _blocks.Where(b => !b.IsSelected).Select(b => b.BlockName).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _blocks.Clear();
             foreach (var bn in blockNames.OrderBy(x => x))
             {
-                // Requirement: when new file(s) are selected, newly appearing blocks should be selected by default.
-                // Keep user's previous choice for blocks that already existed.
-                bool existedBefore = oldSelected.Contains(bn) || oldUnselected.Contains(bn);
-                bool isSelected = existedBefore ? oldSelected.Contains(bn) : true;
-                _blocks.Add(new BlockEntry { BlockName = bn, IsSelected = isSelected });
+                _blocks.Add(new BlockEntry { BlockName = bn, IsSelected = false });
             }
             BlocksListView.Items.Refresh();
         }
@@ -1086,6 +1135,12 @@ namespace CadFilesUpdater.Windows
                     }
                 }
             }
+
+            // Sort rows: first by file, then by layout owner, then by block name
+            visibleRows = visibleRows.OrderBy(r => r.FilePath, StringComparer.OrdinalIgnoreCase)
+                                    .ThenBy(r => r.LayoutName, StringComparer.OrdinalIgnoreCase)
+                                    .ThenBy(r => r.BlockName, StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
 
             var attributeTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var r in visibleRows)
@@ -1191,7 +1246,10 @@ namespace CadFilesUpdater.Windows
 
         private void UpdateSummaries()
         {
-            FilesSummaryText.Text = $"{_files.Count} file(s) loaded, {_files.Count(f => f.IsSelected)} selected";
+            var selectedCount = _allFilesSelected
+                ? _files.Count
+                : FilesListView.SelectedItems.Count;
+            FilesSummaryText.Text = $"{_files.Count} file(s) loaded, {selectedCount} selected";
         }
 
         private void MainWindow_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -1223,6 +1281,12 @@ namespace CadFilesUpdater.Windows
         }
 
         #region Undo/Redo
+
+        private void EnsureUndoBaseline()
+        {
+            if (_undoHistory.Count == 0)
+                RecordUndoState("Initial state");
+        }
 
         private void RecordUndoState(string description, List<string> removedFiles = null)
         {
@@ -1349,17 +1413,256 @@ namespace CadFilesUpdater.Windows
 
         #region Context Menu
 
-        private void AttributesDataGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+        private void AttributesDataGrid_ContextMenuOpening(object sender, RoutedEventArgs e)
         {
-            // Context menu is already defined in XAML, this handler can be used for dynamic updates if needed
+            // Show/hide menu items based on whether the clicked cell is editable
+            var cell = GetSingleTargetCell();
+            bool isEditable = false;
+            
+            if (cell.HasValue)
+            {
+                var cellValue = cell.Value;
+                var colName = cellValue.Column?.SortMemberPath;
+                if (!string.IsNullOrWhiteSpace(colName))
+                {
+                    isEditable = IsAttributeColumn(colName);
+                }
+            }
+            
+            // Find menu items by name (they're defined in XAML with x:Name)
+            var contextMenu = sender as System.Windows.Controls.ContextMenu;
+            if (contextMenu != null)
+            {
+                foreach (var item in contextMenu.Items)
+                {
+                    if (item is System.Windows.Controls.MenuItem menuItem)
+                    {
+                        var name = menuItem.Name;
+                        if (name == "ContextMenu_RestoreCell" || 
+                            name == "ContextMenu_Copy" || 
+                            name == "ContextMenu_Paste" || 
+                            name == "ContextMenu_Delete" ||
+                            name == "ContextMenu_ApplySimilar")
+                        {
+                            menuItem.Visibility = isEditable ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+                        }
+                    }
+                }
+            }
+        }
+
+        private void ContextMenu_CopyCell_Click(object sender, RoutedEventArgs e)
+        {
+            var cell = GetSingleTargetCell();
+            if (!cell.HasValue) return;
+
+            var cellValue = cell.Value;
+            var drv = cellValue.Item as DataRowView;
+            var colName = cellValue.Column?.SortMemberPath;
+            if (drv == null || string.IsNullOrWhiteSpace(colName)) return;
+
+            if (!IsAttributeColumn(colName)) return;
+
+            // Get value from _changes if it exists, otherwise from the row
+            var filePath = drv.Row["FilePath"]?.ToString();
+            var handle = drv.Row["Handle"]?.ToString();
+            var blockName = drv.Row["BlockName"]?.ToString();
+            
+            string value = "";
+            if (!string.IsNullOrWhiteSpace(filePath) && !string.IsNullOrWhiteSpace(handle) && !string.IsNullOrWhiteSpace(blockName))
+            {
+                var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+                if (_changes.TryGetValue(key, out var changedValue))
+                {
+                    value = changedValue ?? "";
+                }
+                else
+                {
+                    value = drv.Row[colName]?.ToString() ?? "";
+                }
+            }
+            else
+            {
+                value = drv.Row[colName]?.ToString() ?? "";
+            }
+            
+            Clipboard.SetText(value);
+        }
+
+        private void ContextMenu_PasteCell_Click(object sender, RoutedEventArgs e)
+        {
+            if (!Clipboard.ContainsText()) return;
+            var pasteValue = Clipboard.GetText() ?? "";
+
+            // Paste only to the single cell where context menu was opened
+            var cell = GetSingleTargetCell();
+            if (!cell.HasValue) return;
+
+            var cellValue = cell.Value;
+            var drv = cellValue.Item as DataRowView;
+            var colName = cellValue.Column?.SortMemberPath;
+            if (drv == null || string.IsNullOrWhiteSpace(colName)) return;
+            if (!IsAttributeColumn(colName)) return;
+
+            var filePath = drv.Row["FilePath"]?.ToString();
+            var handle = drv.Row["Handle"]?.ToString();
+            var blockName = drv.Row["BlockName"]?.ToString();
+            if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(handle) || string.IsNullOrWhiteSpace(blockName))
+                return;
+
+            var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+            var hadChange = _changes.TryGetValue(key, out var existingValue);
+            var willChange = !hadChange || !string.Equals(existingValue ?? "", pasteValue ?? "", StringComparison.Ordinal);
+            if (willChange)
+                EnsureUndoBaseline();
+            _changes[key] = pasteValue;
+
+            if (willChange)
+                RecordUndoState("Paste");
+
+            RebuildGridPreservingScroll();
+            UpdateUndoRedoButtons();
+        }
+
+        private void ContextMenu_DeleteCell_Click(object sender, RoutedEventArgs e)
+        {
+            // Delete only the single cell where context menu was opened
+            var cell = GetSingleTargetCell();
+            if (!cell.HasValue) return;
+
+            var cellValue = cell.Value;
+            var drv = cellValue.Item as DataRowView;
+            var colName = cellValue.Column?.SortMemberPath;
+            if (drv == null || string.IsNullOrWhiteSpace(colName)) return;
+            if (!IsAttributeColumn(colName)) return;
+
+            var filePath = drv.Row["FilePath"]?.ToString();
+            var handle = drv.Row["Handle"]?.ToString();
+            var blockName = drv.Row["BlockName"]?.ToString();
+            if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(handle) || string.IsNullOrWhiteSpace(blockName))
+                return;
+
+            var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+            var hadChange = _changes.TryGetValue(key, out var existingValue);
+            var willChange = !hadChange || !string.Equals(existingValue ?? "", "", StringComparison.Ordinal);
+            if (willChange)
+                EnsureUndoBaseline();
+            _changes[key] = "";
+
+            if (willChange)
+                RecordUndoState("Delete cell content");
+
+            RebuildGridPreservingScroll();
+            UpdateUndoRedoButtons();
+        }
+
+        private void ContextMenu_ApplySimilar_Click(object sender, RoutedEventArgs e)
+        {
+            // Get the value from the clicked cell
+            var cell = GetSingleTargetCell();
+            if (!cell.HasValue) return;
+
+            var cellValue = cell.Value;
+            var drv = cellValue.Item as DataRowView;
+            var colName = cellValue.Column?.SortMemberPath;
+            if (drv == null || string.IsNullOrWhiteSpace(colName)) return;
+            if (!IsAttributeColumn(colName)) return;
+
+            var filePath = drv.Row["FilePath"]?.ToString();
+            var handle = drv.Row["Handle"]?.ToString();
+            var blockName = drv.Row["BlockName"]?.ToString();
+            if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(handle) || string.IsNullOrWhiteSpace(blockName))
+                return;
+
+            // Get the value from _changes if it exists, otherwise from the row
+            string valueToApply = "";
+            var sourceKey = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+            if (_changes.TryGetValue(sourceKey, out var changedValue))
+            {
+                valueToApply = changedValue ?? "";
+            }
+            else
+            {
+                valueToApply = drv.Row[colName]?.ToString() ?? "";
+            }
+
+            // If the value is "N/A", don't apply it
+            if (string.Equals(valueToApply, "N/A", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            // Find all instances of this block across all files and apply the value
+            int appliedCount = 0;
+            bool anyChange = false;
+            bool baselineEnsured = false;
+            foreach (var fileInstances in _instancesByFile)
+            {
+                foreach (var row in fileInstances.Value)
+                {
+                    // Match by block name (case-insensitive)
+                    if (string.Equals(row.BlockName, blockName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Check if this block has this attribute
+                        if (row.Attributes.ContainsKey(colName))
+                        {
+                            var key = new BlockAnalyzer.ChangeKey(row.FilePath, row.BlockHandle, row.BlockName, colName);
+                            
+                            // Get original value for this specific instance
+                            var originalValue = GetOriginalAttributeValue(row.FilePath, row.BlockHandle, colName);
+                            
+                            // Only add to _changes if the value is different from original
+                            if (string.Equals(originalValue ?? "", valueToApply ?? "", StringComparison.Ordinal))
+                            {
+                                // Value is same as original, remove from _changes if it exists
+                                if (_changes.ContainsKey(key))
+                                {
+                                    if (!baselineEnsured)
+                                    {
+                                        EnsureUndoBaseline();
+                                        baselineEnsured = true;
+                                    }
+                                    _changes.Remove(key);
+                                    anyChange = true;
+                                }
+                            }
+                            else
+                            {
+                                // Value is different, add to _changes
+                                var hadChange = _changes.TryGetValue(key, out var existingValue);
+                                var willChange = !hadChange || !string.Equals(existingValue ?? "", valueToApply ?? "", StringComparison.Ordinal);
+                                if (willChange)
+                                {
+                                    if (!baselineEnsured)
+                                    {
+                                        EnsureUndoBaseline();
+                                        baselineEnsured = true;
+                                    }
+                                    _changes[key] = valueToApply;
+                                    appliedCount++;
+                                    anyChange = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (anyChange)
+                RecordUndoState("Apply value to all similar attributes");
+
+            RebuildGridPreservingScroll();
+            UpdateUndoRedoButtons();
+
+            if (appliedCount > 0)
+            {
+                MessageBox.Show($"Applied value to {appliedCount} attribute(s) in block '{blockName}', attribute '{colName}' across all files.", 
+                    "Apply Similar", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
 
         private void ContextMenu_RevertAttribute_Click(object sender, RoutedEventArgs e)
         {
             var selectedCells = AttributesDataGrid.SelectedCells;
             if (selectedCells.Count == 0) return;
-
-            RecordUndoState("Revert attribute(s)");
 
             var cellsToRevert = new HashSet<BlockAnalyzer.ChangeKey>();
             foreach (var cell in selectedCells)
@@ -1385,8 +1688,19 @@ namespace CadFilesUpdater.Windows
                 cellsToRevert.Add(new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName));
             }
 
+            bool anyChange = false;
             foreach (var key in cellsToRevert)
-                _changes.Remove(key);
+            {
+                if (_changes.ContainsKey(key))
+                {
+                    if (!anyChange) EnsureUndoBaseline();
+                    _changes.Remove(key);
+                    anyChange = true;
+                }
+            }
+
+            if (anyChange)
+                RecordUndoState("Revert attribute(s)");
 
             RebuildGridPreservingScroll();
             UpdateUndoRedoButtons();
@@ -1397,8 +1711,6 @@ namespace CadFilesUpdater.Windows
             // Get cells from selection or current cell if nothing selected
             var cells = AttributesDataGrid.SelectedCells;
             if (cells.Count == 0 && AttributesDataGrid.CurrentCell.Item == null) return;
-
-            RecordUndoState("Revert block(s)");
 
             // Collect block names to revert (across ALL files, not just the file from selected cell)
             var blockNamesToRevert = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1431,8 +1743,13 @@ namespace CadFilesUpdater.Windows
                 .Where(k => blockNamesToRevert.Contains(k.BlockName))
                 .ToList();
 
-            foreach (var key in keysToRemove)
-                _changes.Remove(key);
+            if (keysToRemove.Count > 0)
+            {
+                EnsureUndoBaseline();
+                foreach (var key in keysToRemove)
+                    _changes.Remove(key);
+                RecordUndoState("Revert block(s)");
+            }
 
             RebuildGridPreservingScroll();
             UpdateUndoRedoButtons();
@@ -1442,8 +1759,6 @@ namespace CadFilesUpdater.Windows
         {
             var selectedCells = AttributesDataGrid.SelectedCells;
             if (selectedCells.Count == 0) return;
-
-            RecordUndoState("Revert file(s)");
 
             var filesToRevert = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cell in selectedCells)
@@ -1460,8 +1775,13 @@ namespace CadFilesUpdater.Windows
                 .Where(k => filesToRevert.Contains(k.FilePath))
                 .ToList();
 
-            foreach (var key in keysToRemove)
-                _changes.Remove(key);
+            if (keysToRemove.Count > 0)
+            {
+                EnsureUndoBaseline();
+                foreach (var key in keysToRemove)
+                    _changes.Remove(key);
+                RecordUndoState("Revert file(s)");
+            }
 
             RebuildGridPreservingScroll();
             UpdateUndoRedoButtons();
@@ -1469,27 +1789,36 @@ namespace CadFilesUpdater.Windows
 
         private void ContextMenu_OpenInAutoCAD_Click(object sender, RoutedEventArgs e)
         {
+            var selectedCells = AttributesDataGrid.SelectedCells;
+            if (selectedCells.Count == 0 && AttributesDataGrid.CurrentCell.Item == null) return;
+
+            string filePath = null;
+            if (selectedCells.Count > 0)
+            {
+                var drv = selectedCells[0].Item as DataRowView;
+                filePath = drv?.Row["FilePath"]?.ToString();
+            }
+            else if (AttributesDataGrid.CurrentCell.Item != null)
+            {
+                var drv = AttributesDataGrid.CurrentCell.Item as DataRowView;
+                filePath = drv?.Row["FilePath"]?.ToString();
+            }
+
+            if (string.IsNullOrWhiteSpace(filePath)) return;
+            OpenFileInAutoCad(filePath);
+        }
+
+        private void FilesContext_OpenInAutoCAD_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = FilesListView.SelectedItem as FileEntry;
+            if (entry == null || string.IsNullOrWhiteSpace(entry.FilePath)) return;
+            OpenFileInAutoCad(entry.FilePath);
+        }
+
+        private void OpenFileInAutoCad(string filePath)
+        {
             try
             {
-                var selectedCells = AttributesDataGrid.SelectedCells;
-                if (selectedCells.Count == 0 && AttributesDataGrid.CurrentCell.Item == null) return;
-
-                var filePath = "";
-                if (selectedCells.Count > 0)
-                {
-                    var drv = selectedCells[0].Item as DataRowView;
-                    if (drv != null)
-                        filePath = drv.Row["FilePath"]?.ToString();
-                }
-                else if (AttributesDataGrid.CurrentCell.Item != null)
-                {
-                    var drv = AttributesDataGrid.CurrentCell.Item as DataRowView;
-                    if (drv != null)
-                        filePath = drv.Row["FilePath"]?.ToString();
-                }
-
-                if (string.IsNullOrWhiteSpace(filePath)) return;
-
                 var docManager = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
 
                 // If already open, just activate it.
@@ -1504,7 +1833,6 @@ namespace CadFilesUpdater.Windows
                     }
                 }
 
-                // Try to open directly via DocumentManager.Open (no dialog).
                 var activeDoc = docManager.MdiActiveDocument;
                 if (activeDoc != null)
                 {
@@ -1607,8 +1935,9 @@ namespace CadFilesUpdater.Windows
 
             try
             {
-                // Restore and bring AutoCAD to front.
-                ShowWindow(acadWindow.Handle, 9); // SW_RESTORE
+                // Bring AutoCAD to front without changing its size.
+                if (acadWindow.WindowState == Autodesk.AutoCAD.Windows.Window.State.Minimized)
+                    ShowWindow(acadWindow.Handle, 9); // SW_RESTORE only if minimized
                 SetForegroundWindow(acadWindow.Handle);
             }
             catch
@@ -1622,6 +1951,35 @@ namespace CadFilesUpdater.Windows
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        private bool IsAttributeColumn(string colName)
+        {
+            return !(colName.Equals("File", StringComparison.OrdinalIgnoreCase)
+                     || colName.Equals("LayoutOwner", StringComparison.OrdinalIgnoreCase)
+                     || colName.Equals("BlockName", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private List<DataGridCellInfo> GetTargetCells()
+        {
+            if (AttributesDataGrid.SelectedCells.Count > 0)
+                return AttributesDataGrid.SelectedCells.ToList();
+
+            if (AttributesDataGrid.CurrentCell.Item != null)
+                return new List<DataGridCellInfo> { AttributesDataGrid.CurrentCell };
+
+            return new List<DataGridCellInfo>();
+        }
+
+        private DataGridCellInfo? GetSingleTargetCell()
+        {
+            if (AttributesDataGrid.CurrentCell.Item != null)
+                return AttributesDataGrid.CurrentCell;
+
+            if (AttributesDataGrid.SelectedCells.Count > 0)
+                return AttributesDataGrid.SelectedCells[0];
+
+            return null;
+        }
 
         #endregion
 
