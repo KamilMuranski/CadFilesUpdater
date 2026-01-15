@@ -1427,13 +1427,13 @@ namespace CadFilesUpdater.Windows
                     if (string.Equals(d.Name, filePath, StringComparison.OrdinalIgnoreCase))
                     {
                         docManager.MdiActiveDocument = d;
-                        MinimizeAutoCadWindow();
+                        BringAutoCadToFront();
                         this.WindowState = System.Windows.WindowState.Minimized;
                         return;
                     }
                 }
 
-                // Open file without dialog: use -OPEN and temporarily disable FILEDIA/CMDDIA.
+                // Try to open directly via DocumentManager.Open (no dialog).
                 var activeDoc = docManager.MdiActiveDocument;
                 if (activeDoc != null)
                 {
@@ -1442,6 +1442,18 @@ namespace CadFilesUpdater.Windows
                         MessageBox.Show("Cannot find the specified file. Please verify that the file exists.",
                             "File not found", MessageBoxButton.OK, MessageBoxImage.Warning);
                         return;
+                    }
+
+                    try
+                    {
+                        docManager.Open(filePath, false);
+                        BringAutoCadToFront();
+                        this.WindowState = System.Windows.WindowState.Minimized;
+                        return;
+                    }
+                    catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                    {
+                        // Fallback to command below.
                     }
 
                     object oldFileDia = null;
@@ -1453,19 +1465,24 @@ namespace CadFilesUpdater.Windows
                         Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("FILEDIA", 0);
                         Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("CMDDIA", 0);
 
-                        // Use raw file path; AutoCAD expects normal Windows path.
+                        // Fallback: use -OPEN with dialogs disabled.
                         activeDoc.SendStringToExecute($"_.-OPEN\n\"{filePath}\"\n", true, false, false);
                     }
                     finally
                     {
-                        if (oldFileDia != null)
-                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("FILEDIA", oldFileDia);
-                        if (oldCmdDia != null)
-                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("CMDDIA", oldCmdDia);
+                        // Delay restore to allow command to execute while dialogs are disabled.
+                        _openOldFileDia = oldFileDia;
+                        _openOldCmdDia = oldCmdDia;
+                        ScheduleRestoreAutoCadDialogs();
                     }
 
-                    MinimizeAutoCadWindow();
+                    BringAutoCadToFront();
                     this.WindowState = System.Windows.WindowState.Minimized;
+                }
+                else
+                {
+                    LogOpenInAutoCad("No active document available to send OPEN command.");
+                    MessageBox.Show("No active AutoCAD document available to open the file.", "AutoCAD", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
             }
             catch (Exception ex)
@@ -1474,20 +1491,67 @@ namespace CadFilesUpdater.Windows
             }
         }
 
-        private void MinimizeAutoCadWindow()
+        private System.Windows.Threading.DispatcherTimer _openRestoreTimer;
+        private object _openOldFileDia;
+        private object _openOldCmdDia;
+
+        private void ScheduleRestoreAutoCadDialogs()
+        {
+            // Restore FILEDIA/CMDDIA after the command is likely consumed.
+            if (_openRestoreTimer == null)
+            {
+                _openRestoreTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(1)
+                };
+                _openRestoreTimer.Tick += (s, e) =>
+                {
+                    _openRestoreTimer.Stop();
+                    try
+                    {
+                        if (_openOldFileDia != null)
+                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("FILEDIA", _openOldFileDia);
+                        if (_openOldCmdDia != null)
+                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("CMDDIA", _openOldCmdDia);
+                    }
+                    catch
+                    {
+                        // Best-effort only.
+                    }
+                    finally
+                    {
+                        _openOldFileDia = null;
+                        _openOldCmdDia = null;
+                    }
+                };
+            }
+
+            _openRestoreTimer.Stop();
+            _openRestoreTimer.Start();
+        }
+
+        private void BringAutoCadToFront()
         {
             var acadWindow = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow;
             if (acadWindow == null) return;
 
             try
             {
-                acadWindow.WindowState = Autodesk.AutoCAD.Windows.Window.State.Minimized;
+                // Restore and bring AutoCAD to front.
+                ShowWindow(acadWindow.Handle, 9); // SW_RESTORE
+                SetForegroundWindow(acadWindow.Handle);
             }
             catch
             {
                 // Best-effort only.
             }
         }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         #endregion
 
