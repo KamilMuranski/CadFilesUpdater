@@ -67,6 +67,12 @@
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="System.Xaml" />
+    <Reference Include="ClosedXML">
+      <HintPath>packages\ClosedXML.0.95.4\lib\net46\ClosedXML.dll</HintPath>
+    </Reference>
+    <Reference Include="DocumentFormat.OpenXml">
+      <HintPath>packages\DocumentFormat.OpenXml.2.7.2\lib\net46\DocumentFormat.OpenXml.dll</HintPath>
+    </Reference>
     <Reference Include="AcDbMgd">
       <HintPath>C:\Program Files\Autodesk\AutoCAD 2021\AcDbMgd.dll</HintPath>
       <Private>False</Private>
@@ -125,4 +131,12 @@
     <WCFMetadata Include="Connected Services\" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="Exists('$(SolutionDir)\.nuget\NuGet.targets')" />
+  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them. For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+    </PropertyGroup>
+    <Error Condition="!Exists('packages\ClosedXML.0.95.4\lib\net46\ClosedXML.dll')" Text="$([System.String]::Format('$(ErrorText)', 'packages\ClosedXML.0.95.4\lib\net46\ClosedXML.dll'))" />
+    <Error Condition="!Exists('packages\DocumentFormat.OpenXml.2.7.2\lib\net46\DocumentFormat.OpenXml.dll')" Text="$([System.String]::Format('$(ErrorText)', 'packages\DocumentFormat.OpenXml.2.7.2\lib\net46\DocumentFormat.OpenXml.dll'))" />
+  </Target>
 </Project>

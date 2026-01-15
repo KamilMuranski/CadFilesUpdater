@@ -7,22 +7,33 @@
     <Window.Resources>
         <Style x:Key="IconButtonStyle" TargetType="Button">
             <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="Black"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="MinWidth" Value="120"/>
-            <Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="BorderBrush" Value="#E0E0E0"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="8" Padding="2">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4" Padding="2">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#F5F5F5"/>
+                    <Setter Property="BorderBrush" Value="#0078D4"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
     </Window.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -52,12 +63,15 @@
                         </StackPanel>
                     </StackPanel>
                     <Button Grid.Column="1"
-                            Content="Choose attribute..."
                             Click="ChooseAttribute_Click"
-                            Background="#FFD700"
                             Style="{StaticResource IconButtonStyle}"
                             Margin="10,0,0,0"
-                            VerticalAlignment="Center"/>
+                            VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE71C;" Margin="0,0,8,0" Foreground="#FFD700"/>
+                            <TextBlock Text="Choose attribute..."/>
+                        </StackPanel>
+                    </Button>
                 </Grid>
             </Border>
 
@@ -65,20 +79,29 @@
             <TextBox x:Name="ValueBox" Grid.Row="2" MinWidth="520" Padding="6" />
 
             <DockPanel Grid.Row="3" Margin="0,12,0,0" LastChildFill="False" VerticalAlignment="Top">
-                <Button Content="Apply changes in selected files"
-                        Click="ApplySelected_Click"
-                        Background="#065F46"
+                <Button Click="ApplySelected_Click"
                         Style="{StaticResource IconButtonStyle}"
-                        Margin="0,0,10,0"/>
-                <Button Content="Apply changes in all files"
-                        Click="ApplyAll_Click"
-                        Background="#16A34A"
+                        Margin="0,0,10,0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B5;" Margin="0,0,8,0" Foreground="#065F46"/>
+                        <TextBlock Text="Apply changes in selected files"/>
+                    </StackPanel>
+                </Button>
+                <Button Click="ApplyAll_Click"
                         Style="{StaticResource IconButtonStyle}"
-                        Margin="0,0,10,0"/>
-                <Button Content="Cancel"
-                        Click="Cancel_Click"
-                        Background="#6B7280"
-                        Style="{StaticResource IconButtonStyle}"/>
+                        Margin="0,0,10,0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B5;" Margin="0,0,8,0" Foreground="#16A34A"/>
+                        <TextBlock Text="Apply changes in all files"/>
+                    </StackPanel>
+                </Button>
+                <Button Click="Cancel_Click"
+                        Style="{StaticResource IconButtonStyle}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,8,0" Foreground="#6B7280"/>
+                        <TextBlock Text="Cancel"/>
+                    </StackPanel>
+                </Button>
             </DockPanel>
         </Grid>
     </ScrollViewer>

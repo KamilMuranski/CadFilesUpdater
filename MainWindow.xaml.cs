@@ -8,10 +8,13 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using Microsoft.Win32;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.Windows;
+using ClosedXML.Excel;
 
 namespace CadFilesUpdater.Windows
 {
-    public partial class MainWindow : Window
+    public partial class MainWindow : System.Windows.Window
     {
         private sealed class FileEntry
         {
@@ -51,6 +54,7 @@ namespace CadFilesUpdater.Windows
         {
             public Dictionary<BlockAnalyzer.ChangeKey, string> Changes { get; set; }
             public string Description { get; set; }
+            public List<string> RemovedFiles { get; set; } // Files that were removed in this action
         }
         private readonly List<ChangeSnapshot> _undoHistory = new List<ChangeSnapshot>();
         private int _undoHistoryIndex = -1;
@@ -187,7 +191,7 @@ namespace CadFilesUpdater.Windows
 
         private void AddFiles_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new OpenFileDialog
+            var dialog = new Microsoft.Win32.OpenFileDialog
             {
                 Multiselect = true,
                 Filter = "AutoCAD files (*.dwg)|*.dwg|All files (*.*)|*.*",
@@ -227,8 +231,18 @@ namespace CadFilesUpdater.Windows
 
         private void RemoveFiles_Click(object sender, RoutedEventArgs e)
         {
-            var toRemove = FilesListView.SelectedItems.Cast<FileEntry>().ToList();
+            // Get selected files - check both SelectedItems and IsSelected property
+            var toRemove = _files.Where(f => f.IsSelected).ToList();
+            if (toRemove.Count == 0)
+            {
+                // Fallback: try SelectedItems if nothing is selected via IsSelected
+                toRemove = FilesListView.SelectedItems.Cast<FileEntry>().ToList();
+            }
+            
             if (toRemove.Count == 0) return;
+
+            // Record undo state before removing
+            RecordUndoState("Remove files", removedFiles: toRemove.Select(f => f.FilePath).ToList());
 
             foreach (var fe in toRemove)
             {
@@ -244,6 +258,7 @@ namespace CadFilesUpdater.Windows
             RebuildBlocksList();
             RebuildGrid();
             UpdateSummaries();
+            UpdateUndoRedoButtons();
         }
 
         private void SelectAllFiles_Click(object sender, RoutedEventArgs e)
@@ -1138,7 +1153,7 @@ namespace CadFilesUpdater.Windows
 
         #region Undo/Redo
 
-        private void RecordUndoState(string description)
+        private void RecordUndoState(string description, List<string> removedFiles = null)
         {
             // Remove any history after current index (when user did undo and then made new change)
             if (_undoHistoryIndex < _undoHistory.Count - 1)
@@ -1148,7 +1163,8 @@ namespace CadFilesUpdater.Windows
             var snapshot = new ChangeSnapshot
             {
                 Changes = new Dictionary<BlockAnalyzer.ChangeKey, string>(),
-                Description = description
+                Description = description,
+                RemovedFiles = removedFiles != null ? new List<string>(removedFiles) : null
             };
             foreach (var kv in _changes)
                 snapshot.Changes[kv.Key] = kv.Value;
@@ -1170,6 +1186,9 @@ namespace CadFilesUpdater.Windows
         {
             if (_undoHistoryIndex < 0) return;
 
+            // Get current snapshot before undoing
+            var currentSnapshot = _undoHistory[_undoHistoryIndex];
+            
             _undoHistoryIndex--;
             if (_undoHistoryIndex >= 0)
             {
@@ -1177,13 +1196,43 @@ namespace CadFilesUpdater.Windows
                 _changes.Clear();
                 foreach (var kv in snapshot.Changes)
                     _changes[kv.Key] = kv.Value;
+                
+                // Restore removed files if any
+                if (currentSnapshot.RemovedFiles != null && currentSnapshot.RemovedFiles.Count > 0)
+                {
+                    foreach (var filePath in currentSnapshot.RemovedFiles)
+                    {
+                        // Check if file was already restored
+                        if (!_files.Any(f => string.Equals(f.FilePath, filePath, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            _files.Add(new FileEntry { FilePath = filePath, IsSelected = false });
+                            // Reload instances for restored file
+                            EnsureInstances(filePath);
+                        }
+                    }
+                }
             }
             else
             {
                 _changes.Clear();
+                
+                // Restore removed files if any
+                if (currentSnapshot.RemovedFiles != null && currentSnapshot.RemovedFiles.Count > 0)
+                {
+                    foreach (var filePath in currentSnapshot.RemovedFiles)
+                    {
+                        if (!_files.Any(f => string.Equals(f.FilePath, filePath, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            _files.Add(new FileEntry { FilePath = filePath, IsSelected = false });
+                            EnsureInstances(filePath);
+                        }
+                    }
+                }
             }
 
+            RebuildBlocksList();
             RebuildGrid();
+            UpdateSummaries();
             UpdateUndoRedoButtons();
         }
 
@@ -1196,8 +1245,26 @@ namespace CadFilesUpdater.Windows
             _changes.Clear();
             foreach (var kv in snapshot.Changes)
                 _changes[kv.Key] = kv.Value;
+            
+            // Remove files that were removed in this action
+            if (snapshot.RemovedFiles != null && snapshot.RemovedFiles.Count > 0)
+            {
+                var toRemove = _files.Where(f => snapshot.RemovedFiles.Contains(f.FilePath, StringComparer.OrdinalIgnoreCase)).ToList();
+                foreach (var fe in toRemove)
+                {
+                    _files.Remove(fe);
+                    _instancesByFile.Remove(fe.FilePath);
+                }
+                
+                // Drop changes for removed files
+                var removedPaths = new HashSet<string>(snapshot.RemovedFiles, StringComparer.OrdinalIgnoreCase);
+                var keysToRemove = _changes.Keys.Where(k => removedPaths.Contains(k.FilePath)).ToList();
+                foreach (var k in keysToRemove) _changes.Remove(k);
+            }
 
+            RebuildBlocksList();
             RebuildGrid();
+            UpdateSummaries();
             UpdateUndoRedoButtons();
         }
 
@@ -1327,6 +1394,264 @@ namespace CadFilesUpdater.Windows
 
             RebuildGridPreservingScroll();
             UpdateUndoRedoButtons();
+        }
+
+        private void ContextMenu_OpenInAutoCAD_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var selectedCells = AttributesDataGrid.SelectedCells;
+                if (selectedCells.Count == 0 && AttributesDataGrid.CurrentCell.Item == null) return;
+
+                var filePath = "";
+                if (selectedCells.Count > 0)
+                {
+                    var drv = selectedCells[0].Item as DataRowView;
+                    if (drv != null)
+                        filePath = drv.Row["FilePath"]?.ToString();
+                }
+                else if (AttributesDataGrid.CurrentCell.Item != null)
+                {
+                    var drv = AttributesDataGrid.CurrentCell.Item as DataRowView;
+                    if (drv != null)
+                        filePath = drv.Row["FilePath"]?.ToString();
+                }
+
+                if (string.IsNullOrWhiteSpace(filePath)) return;
+
+                var docManager = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
+
+                // If already open, just activate it.
+                foreach (Document d in docManager)
+                {
+                    if (string.Equals(d.Name, filePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        docManager.MdiActiveDocument = d;
+                        MinimizeAutoCadWindow();
+                        this.WindowState = System.Windows.WindowState.Minimized;
+                        return;
+                    }
+                }
+
+                // Open file without dialog: use -OPEN and temporarily disable FILEDIA/CMDDIA.
+                var activeDoc = docManager.MdiActiveDocument;
+                if (activeDoc != null)
+                {
+                    if (!System.IO.File.Exists(filePath))
+                    {
+                        MessageBox.Show("Cannot find the specified file. Please verify that the file exists.",
+                            "File not found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    object oldFileDia = null;
+                    object oldCmdDia = null;
+                    try
+                    {
+                        oldFileDia = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("FILEDIA");
+                        oldCmdDia = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("CMDDIA");
+                        Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("FILEDIA", 0);
+                        Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("CMDDIA", 0);
+
+                        // Use raw file path; AutoCAD expects normal Windows path.
+                        activeDoc.SendStringToExecute($"_.-OPEN\n\"{filePath}\"\n", true, false, false);
+                    }
+                    finally
+                    {
+                        if (oldFileDia != null)
+                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("FILEDIA", oldFileDia);
+                        if (oldCmdDia != null)
+                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable("CMDDIA", oldCmdDia);
+                    }
+
+                    MinimizeAutoCadWindow();
+                    this.WindowState = System.Windows.WindowState.Minimized;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error opening file in AutoCAD: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void MinimizeAutoCadWindow()
+        {
+            var acadWindow = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow;
+            if (acadWindow == null) return;
+
+            try
+            {
+                acadWindow.WindowState = Autodesk.AutoCAD.Windows.Window.State.Minimized;
+            }
+            catch
+            {
+                // Best-effort only.
+            }
+        }
+
+        #endregion
+
+        #region Excel Export
+
+        private void ExportAllToExcel_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var allFiles = _files.Select(f => f.FilePath).ToList();
+                ExportToExcel(allFiles, null, "all blocks");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error exporting to Excel: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ExportSelectedToExcel_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Export only what's visible in the table (selected files AND selected blocks)
+                var selectedFiles = GetSelectedFilePaths();
+                var selectedBlocks = GetSelectedBlocks();
+                
+                if (selectedFiles.Count == 0)
+                {
+                    MessageBox.Show("No files selected for export.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                if (selectedBlocks.Count == 0)
+                {
+                    MessageBox.Show("No blocks selected for export.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                ExportToExcel(selectedFiles, selectedBlocks, "selected blocks");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error exporting to Excel: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ExportToExcel(List<string> filePaths, HashSet<string> blockFilter, string description)
+        {
+            var saveDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Filter = "Excel files (*.xlsx)|*.xlsx|All files (*.*)|*.*",
+                FileName = "AttributeExport.xlsx",
+                Title = $"Export {description} to Excel"
+            };
+
+            if (saveDialog.ShowDialog() != true) return;
+
+            SetBusy(true, $"Exporting {description} to Excel...");
+
+            // Collect all data for selected files (before try block so it's accessible later)
+            var allRows = new List<BlockAnalyzer.AttributeInstanceRow>();
+            foreach (var filePath in filePaths)
+            {
+                EnsureInstances(filePath);
+                if (!_instancesByFile.TryGetValue(filePath, out var instances)) continue;
+                
+                foreach (var row in instances)
+                {
+                    // If blockFilter is null, export all blocks. Otherwise, filter by selected blocks.
+                    if (blockFilter == null || blockFilter.Contains(row.BlockName))
+                    {
+                        allRows.Add(row);
+                    }
+                }
+            }
+
+            if (allRows.Count == 0)
+            {
+                SetBusy(false, null);
+                MessageBox.Show("No data to export.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            try
+            {
+                // Get all unique attribute tags
+                var allTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var row in allRows)
+                {
+                    foreach (var attr in row.Attributes)
+                    {
+                        allTags.Add(attr.Key); // Dictionary<string, string> - Key is the tag
+                    }
+                }
+                var sortedTags = allTags.OrderBy(t => t).ToList();
+
+                // Create Excel workbook
+                using (var workbook = new XLWorkbook())
+                {
+                    var worksheet = workbook.Worksheets.Add("Attributes");
+
+                    // Write header
+                    int col = 1;
+                    worksheet.Cell(1, col++).Value = "File";
+                    worksheet.Cell(1, col++).Value = "Layout Owner";
+                    worksheet.Cell(1, col++).Value = "Block Name";
+                    worksheet.Cell(1, col++).Value = "Handle";
+                    foreach (var tag in sortedTags)
+                    {
+                        worksheet.Cell(1, col++).Value = tag;
+                    }
+
+                    // Style header
+                    var headerRange = worksheet.Range(1, 1, 1, col - 1);
+                    headerRange.Style.Font.Bold = true;
+                    headerRange.Style.Fill.BackgroundColor = XLColor.LightGray;
+                    headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+                    // Write data rows
+                    int rowNum = 2;
+                    foreach (var row in allRows)
+                    {
+                        col = 1;
+                        worksheet.Cell(rowNum, col++).Value = System.IO.Path.GetFileName(row.FilePath);
+                        worksheet.Cell(rowNum, col++).Value = row.LayoutName;
+                        worksheet.Cell(rowNum, col++).Value = row.BlockName;
+                        worksheet.Cell(rowNum, col++).Value = row.BlockHandle;
+
+                        foreach (var tag in sortedTags)
+                        {
+                            // Check if this attribute has a change
+                            var changeKey = new BlockAnalyzer.ChangeKey(row.FilePath, row.BlockHandle, row.BlockName, tag);
+                            if (_changes.TryGetValue(changeKey, out var changedValue))
+                            {
+                                worksheet.Cell(rowNum, col).Value = changedValue;
+                                // Highlight changed cells
+                                worksheet.Cell(rowNum, col).Style.Fill.BackgroundColor = XLColor.LightGreen;
+                            }
+                            else
+                            {
+                                // Use original value from Dictionary
+                                if (row.Attributes.TryGetValue(tag, out var originalValue))
+                                {
+                                    worksheet.Cell(rowNum, col).Value = originalValue;
+                                }
+                            }
+                            col++;
+                        }
+                        rowNum++;
+                    }
+
+                    // Auto-fit columns
+                    worksheet.Columns().AdjustToContents();
+
+                    // Save workbook
+                    workbook.SaveAs(saveDialog.FileName);
+                }
+
+                MessageBox.Show($"Successfully exported {allRows.Count} rows to {saveDialog.FileName}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            finally
+            {
+                SetBusy(false, null);
+            }
         }
 
         #endregion

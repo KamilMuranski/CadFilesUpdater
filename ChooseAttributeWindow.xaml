@@ -10,22 +10,33 @@
 
         <Style x:Key="IconButtonStyle" TargetType="Button">
             <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Foreground" Value="Black"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="MinWidth" Value="120"/>
-            <Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="BorderBrush" Value="#E0E0E0"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="8" Padding="2">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4" Padding="2">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#F5F5F5"/>
+                    <Setter Property="BorderBrush" Value="#0078D4"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
     </Window.Resources>
 
@@ -60,9 +71,9 @@
                 <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,6">
                     <TextBlock Text="Files" FontWeight="Bold" DockPanel.Dock="Left"/>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                        <Button Click="AllFiles_Click" Background="#2563EB" Style="{StaticResource IconButtonStyle}">
+                        <Button Click="AllFiles_Click" Style="{StaticResource IconButtonStyle}">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,6,0"/>
+                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8FB;" Margin="0,0,6,0" Foreground="#2563EB"/>
                                 <TextBlock Text="All files"/>
                             </StackPanel>
                         </Button>
@@ -136,15 +147,15 @@
         </Grid>
 
         <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="False">
-            <Button Click="Ok_Click" Background="#16A34A" Style="{StaticResource IconButtonStyle}" Margin="0,0,10,0">
+            <Button Click="Ok_Click" Style="{StaticResource IconButtonStyle}" Margin="0,0,10,0">
                 <StackPanel Orientation="Horizontal">
-                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE73E;" Margin="0,0,8,0"/>
+                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE73E;" Margin="0,0,8,0" Foreground="#16A34A"/>
                     <TextBlock Text="OK"/>
                 </StackPanel>
             </Button>
-            <Button Click="Cancel_Click" Background="#6B7280" Style="{StaticResource IconButtonStyle}">
+            <Button Click="Cancel_Click" Style="{StaticResource IconButtonStyle}">
                 <StackPanel Orientation="Horizontal">
-                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,8,0"/>
+                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" Margin="0,0,8,0" Foreground="#6B7280"/>
                     <TextBlock Text="Cancel"/>
                 </StackPanel>
             </Button>
