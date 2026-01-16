@@ -114,6 +114,7 @@ namespace CadFilesUpdater.Windows
         private DataTable _table;
         // Track file order for alternating colors in non-editable columns
         private readonly List<string> _fileOrder = new List<string>();
+        private Dictionary<string, string> _attributePrompts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private int? _lastBlockClickIndex;
         private bool? _lastBlockRangeState;
         private bool _suppressSelectionEvents;
@@ -621,6 +622,11 @@ namespace CadFilesUpdater.Windows
                     elementStyle.Setters.Add(new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Center));
                     rowColumn.ElementStyle = elementStyle;
                 }
+                var cellStyle = new Style(typeof(DataGridCell));
+                cellStyle.Setters.Add(new Setter(DataGridCell.HorizontalContentAlignmentProperty, HorizontalAlignment.Center));
+                cellStyle.Setters.Add(new Setter(DataGridCell.VerticalContentAlignmentProperty, VerticalAlignment.Center));
+                cellStyle.Setters.Add(new Setter(DataGridCell.PaddingProperty, new Thickness(0)));
+                e.Column.CellStyle = cellStyle;
                 return;
             }
 
@@ -648,7 +654,16 @@ namespace CadFilesUpdater.Windows
             else
             {
                 // Attribute columns: set header and ensure value is visible
-                e.Column.Header = e.PropertyName; // attribute tag
+                if (_attributePrompts != null &&
+                    _attributePrompts.TryGetValue(e.PropertyName, out var prompt) &&
+                    !string.IsNullOrWhiteSpace(prompt))
+                {
+                    e.Column.Header = $"{e.PropertyName} (Prompt: {prompt})";
+                }
+                else
+                {
+                    e.Column.Header = e.PropertyName; // attribute tag
+                }
                 
                 if (e.Column is DataGridTextColumn textColumn)
                 {
@@ -1560,6 +1575,17 @@ namespace CadFilesUpdater.Windows
             foreach (var r in visibleRows)
                 foreach (var t in r.Attributes.Keys)
                     attributeTags.Add(t);
+
+            _attributePrompts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in visibleRows)
+            {
+                foreach (var kv in r.AttributePrompts)
+                {
+                    if (string.IsNullOrWhiteSpace(kv.Key) || string.IsNullOrWhiteSpace(kv.Value)) continue;
+                    if (!_attributePrompts.ContainsKey(kv.Key))
+                        _attributePrompts[kv.Key] = kv.Value;
+                }
+            }
 
             _table = new DataTable();
             _table.Columns.Add("RowNumber", typeof(int));

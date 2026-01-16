@@ -39,6 +39,7 @@ namespace CadFilesUpdater
             public string BlockName { get; set; }
             public string BlockHandle { get; set; } // Handle string of BlockReference
             public Dictionary<string, string> Attributes { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> AttributePrompts { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
         public readonly struct ChangeKey : IEquatable<ChangeKey>
@@ -161,6 +162,31 @@ namespace CadFilesUpdater
                         BlockHandle = br.Handle.ToString()
                     };
 
+                    // Build prompt map for this block definition
+                    var promptByTag = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    try
+                    {
+                        var blockDefId = br.DynamicBlockTableRecord.IsValid
+                            ? br.DynamicBlockTableRecord
+                            : br.BlockTableRecord;
+                        var blockDef = tr.GetObject(blockDefId, OpenMode.ForRead) as BlockTableRecord;
+                        if (blockDef != null)
+                        {
+                            foreach (ObjectId defId in blockDef)
+                            {
+                                var defEnt = tr.GetObject(defId, OpenMode.ForRead) as AttributeDefinition;
+                                if (defEnt == null) continue;
+                                if (string.IsNullOrWhiteSpace(defEnt.Tag)) continue;
+                                if (!promptByTag.ContainsKey(defEnt.Tag))
+                                    promptByTag[defEnt.Tag] = defEnt.Prompt ?? "";
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // best-effort prompts
+                    }
+
                     if (br.AttributeCollection != null)
                     {
                         foreach (ObjectId attId in br.AttributeCollection)
@@ -169,6 +195,8 @@ namespace CadFilesUpdater
                             if (attRef == null) continue;
                             if (string.IsNullOrWhiteSpace(attRef.Tag)) continue;
                             row.Attributes[attRef.Tag] = attRef.TextString ?? "";
+                            if (promptByTag.TryGetValue(attRef.Tag, out var prompt) && !string.IsNullOrWhiteSpace(prompt))
+                                row.AttributePrompts[attRef.Tag] = prompt;
                         }
                     }
 
