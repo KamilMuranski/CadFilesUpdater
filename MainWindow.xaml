@@ -57,7 +57,7 @@
         <Style x:Key="BottomActionButtonStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
             <Setter Property="Padding" Value="18,10"/>
             <Setter Property="FontSize" Value="14"/>
-            <Setter Property="Width" Value="220"/>
+            <Setter Property="Width" Value="160"/>
             <Setter Property="HorizontalAlignment" Value="Left"/>
             <Setter Property="Background" Value="White"/>
             <Setter Property="Foreground" Value="Black"/>
@@ -202,9 +202,9 @@
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
                 <DataGrid.ContextMenu>
-                    <ContextMenu>
+                    <ContextMenu x:Name="FilesContextMenu" Opened="FilesListView_ContextMenuOpening">
                         <MenuItem Header="Remove" Click="RemoveFiles_Click"/>
-                        <MenuItem Header="Open file in AutoCAD" Click="FilesContext_OpenInAutoCAD_Click"/>
+                        <MenuItem x:Name="FilesContextMenu_OpenFile" Header="Open file" Click="FilesContext_OpenInAutoCAD_Click"/>
                     </ContextMenu>
                 </DataGrid.ContextMenu>
                 <DataGrid.Columns>
@@ -272,6 +272,7 @@
                       AutoGenerateColumns="True"
                       CanUserAddRows="False"
                       CanUserDeleteRows="False"
+                      CanUserResizeColumns="True"
                       IsReadOnly="False"
                       FrozenColumnCount="4"
                       BeginningEdit="AttributesDataGrid_BeginningEdit"
@@ -282,8 +283,10 @@
                       ScrollViewer.ScrollChanged="AttributesDataGrid_ScrollChanged"
                       PreviewKeyDown="AttributesDataGrid_PreviewKeyDown"
                       PreviewMouseLeftButtonDown="AttributesDataGrid_PreviewMouseLeftButtonDown"
+                      PreviewTextInput="AttributesDataGrid_PreviewTextInput"
+                      SelectedCellsChanged="AttributesDataGrid_SelectedCellsChanged"
                       HeadersVisibility="All"
-                      GridLinesVisibility="All"
+                      GridLinesVisibility="None"
                       AlternatingRowBackground="#FFF7F7F7"
                       RowBackground="White"
                       ContextMenuOpening="AttributesDataGrid_ContextMenuOpening"
@@ -293,19 +296,35 @@
                 <DataGrid.ColumnHeaderStyle>
                     <Style TargetType="DataGridColumnHeader">
                         <Setter Property="HorizontalContentAlignment" Value="Center"/>
+                        <EventSetter Event="PreviewMouseLeftButtonDown" Handler="AttributesDataGrid_ColumnHeader_PreviewMouseLeftButtonDown"/>
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
-                        <Setter Property="BorderThickness" Value="2"/>
+                        <Setter Property="BorderThickness" Value="0"/>
                         <Setter Property="BorderBrush" Value="Transparent"/>
-                        <Setter Property="Padding" Value="3,1"/>
+                        <Setter Property="Padding" Value="4,2"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="DataGridCell">
+                                    <Grid SnapsToDevicePixels="True">
+                                        <Border Background="{TemplateBinding Background}"/>
+                                        <Border BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"/>
+                                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                          SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                                    </Grid>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
                         <Style.Triggers>
-                            <!-- Selected cell: blue frame -->
+                            <!-- Selected cell: blue frame (thickness set dynamically in code-behind) -->
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter Property="BorderBrush" Value="#2563EB"/>
                             </Trigger>
-                            <!-- Focused cell: blue border -->
+                            <!-- Focused cell: blue border (also when selected) -->
                             <Trigger Property="IsFocused" Value="True">
                                 <Setter Property="BorderBrush" Value="#0078D4"/>
                             </Trigger>
@@ -329,14 +348,15 @@
                         <MenuItem Header="Revert all changes for this block" Click="ContextMenu_RevertBlock_Click"/>
                         <MenuItem Header="Revert all changes for this file" Click="ContextMenu_RevertFile_Click"/>
                         <Separator/>
-                        <MenuItem x:Name="ContextMenu_ApplySimilar" Header="Apply this value to all similar attributes" Click="ContextMenu_ApplySimilar_Click"/>
+                        <MenuItem x:Name="ContextMenu_ApplySimilar_AllFiles" Header="Apply to all files" Click="ContextMenu_ApplySimilar_AllFiles_Click"/>
+                        <MenuItem x:Name="ContextMenu_ApplySimilar_SelectedFiles" Header="Apply to selected files" Click="ContextMenu_ApplySimilar_SelectedFiles_Click"/>
                         <Separator/>
                         <MenuItem x:Name="ContextMenu_Copy" Header="Copy" Click="ContextMenu_CopyCell_Click"/>
                         <MenuItem x:Name="ContextMenu_Paste" Header="Paste" Click="ContextMenu_PasteCell_Click"/>
                         <MenuItem x:Name="ContextMenu_CopyTopDown" Header="Copy top cells down" Click="ContextMenu_CopyTopDown_Click"/>
                         <MenuItem x:Name="ContextMenu_Delete" Header="Delete cell's content" Click="ContextMenu_DeleteCell_Click"/>
                         <Separator/>
-                        <MenuItem Header="Open file in AutoCAD" Click="ContextMenu_OpenInAutoCAD_Click"/>
+                        <MenuItem x:Name="ContextMenu_OpenFile" Header="Open file" Click="ContextMenu_OpenInAutoCAD_Click"/>
                     </ContextMenu>
                 </DataGrid.ContextMenu>
             </DataGrid>
@@ -344,6 +364,7 @@
             <DockPanel Grid.Row="1" Margin="0,10,0,0" LastChildFill="False">
                 <Button Click="ApplySimilar_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
+                        Width="200"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B5;" Margin="0,0,8,0" Foreground="#F97316"/>
@@ -353,7 +374,7 @@
 
                 <Button Click="ExportToExcel_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
-                        Width="180"
+                        Width="150"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C5;" Margin="0,0,8,0" Foreground="#107C10"/>
@@ -363,7 +384,7 @@
 
                 <Button x:Name="UndoButton" Click="Undo_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
-                        Width="110"
+                        Width="80"
                         Margin="0,0,10,0"
                         IsEnabled="False">
                     <StackPanel Orientation="Horizontal">
@@ -374,7 +395,7 @@
 
                 <Button x:Name="RedoButton" Click="Redo_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
-                        Width="110"
+                        Width="80"
                         Margin="0,0,10,0"
                         IsEnabled="False">
                     <StackPanel Orientation="Horizontal">

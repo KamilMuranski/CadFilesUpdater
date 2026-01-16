@@ -2,12 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Data;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Autodesk.AutoCAD.ApplicationServices;
@@ -120,6 +123,9 @@ namespace CadFilesUpdater.Windows
         private System.Windows.Threading.DispatcherTimer _gridStyleRefreshTimer;
         private bool _allFilesSelected = true;
         private bool _allBlocksSelected = true;
+        private SelectionAdorner _selectionAdorner;
+        private int _lastRowHeaderIndex = -1;
+        private static readonly string LogFilePath = Path.Combine(Path.GetTempPath(), "CadFilesUpdater.log");
 
         public MainWindow()
         {
@@ -590,6 +596,14 @@ namespace CadFilesUpdater.Windows
             // Always set SortMemberPath so we can reliably map a column back to the DataTable column name
             // (headers are user-friendly and not stable identifiers).
             e.Column.SortMemberPath = e.PropertyName;
+            e.Column.CanUserResize = true;
+            
+            // Hide columns with empty or invalid headers
+            if (e.Column.Header == null || string.IsNullOrWhiteSpace(e.Column.Header.ToString()))
+            {
+                e.Cancel = true;
+                return;
+            }
 
             if (string.Equals(e.PropertyName, "RowNumber", StringComparison.OrdinalIgnoreCase))
             {
@@ -598,12 +612,13 @@ namespace CadFilesUpdater.Windows
                 e.Column.CanUserSort = false;
                 e.Column.CanUserReorder = false;
                 e.Column.DisplayIndex = 0;
-                e.Column.Width = 52;
+                e.Column.Width = 48;
                 if (e.Column is DataGridTextColumn rowColumn)
                 {
                     var elementStyle = new Style(typeof(TextBlock));
                     elementStyle.Setters.Add(new Setter(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
                     elementStyle.Setters.Add(new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
+                    elementStyle.Setters.Add(new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Center));
                     rowColumn.ElementStyle = elementStyle;
                 }
                 return;
@@ -624,6 +639,11 @@ namespace CadFilesUpdater.Windows
             {
                 e.Column.Header = "Block name";
                 e.Column.IsReadOnly = true;
+                // Visual separator after the frozen columns (after Block name)
+                var headerStyle = new Style(typeof(DataGridColumnHeader), AttributesDataGrid.ColumnHeaderStyle);
+                headerStyle.Setters.Add(new Setter(DataGridColumnHeader.BorderThicknessProperty, new Thickness(0, 0, 1, 0)));
+                headerStyle.Setters.Add(new Setter(DataGridColumnHeader.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB))));
+                e.Column.HeaderStyle = headerStyle;
             }
             else
             {
@@ -644,11 +664,21 @@ namespace CadFilesUpdater.Windows
                     editingStyle.Setters.Add(new Setter(TextBox.PaddingProperty, new Thickness(4, 2, 4, 2)));
                     textColumn.EditingElementStyle = editingStyle;
                 }
+
+                // Initial width based on cell content; user can resize afterwards
+                e.Column.Width = DataGridLength.SizeToCells;
+                e.Column.MinWidth = 60;
             }
         }
 
         private void AttributesDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
         {
+            if (AttributesDataGrid.SelectedCells.Count > 1)
+            {
+                e.Cancel = true;
+                return;
+            }
+
             var drv = e.Row != null ? (e.Row.Item as DataRowView) : null;
             if (drv == null) return;
 
@@ -801,17 +831,17 @@ namespace CadFilesUpdater.Windows
                 if (globalRowIndex < 0) globalRowIndex = fileRowIndex;
                 bool isEvenRecord = (globalRowIndex % 2 == 0);
 
-                // File grouping colors (yellow/blue) with alternating shades per record
-                var yellowLight = Color.FromRgb(0xFE, 0xF9, 0xC3); // existing light yellow
-                var yellowDark = Color.FromRgb(0xF9, 0xF3, 0xA8);  // existing darker yellow
-                var orangeLight = Color.FromRgb(0xFD, 0xE7, 0xD0); // light orange
-                var orangeDark = Color.FromRgb(0xF9, 0xC8, 0x9B);  // darker orange
+                // File grouping colors (yellow/green) with alternating shades per record
+                var yellowLight = Color.FromRgb(0xFE, 0xF9, 0xC3); // light yellow
+                var yellowDark = Color.FromRgb(0xF9, 0xF3, 0xA8);  // darker yellow
+                var greenLight = Color.FromRgb(0xE8, 0xF4, 0xD9); // #E8F4D9
+                var greenDark = Color.FromRgb(0xD6, 0xEB, 0xC0); // #D6EBC0
                 var editableLight = Colors.White;
                 var editableDark = Color.FromRgb(0xF3, 0xF4, 0xF6); // light gray
 
                 Color nonEditableBgColor = isEvenFile
                     ? (isEvenRecord ? yellowLight : yellowDark)
-                    : (isEvenRecord ? orangeLight : orangeDark);
+                    : (isEvenRecord ? greenLight : greenDark);
                 Color editableBgColor = isEvenRecord ? editableLight : editableDark;
 
                 for (int colIndex = 0; colIndex < AttributesDataGrid.Columns.Count; colIndex++)
@@ -831,18 +861,30 @@ namespace CadFilesUpdater.Windows
                     // Row number column - header-like background, no row coloring
                     if (colName == "RowNumber")
                     {
-                        cell.Background = new SolidColorBrush(SystemColors.ControlColor);
-                        cell.Foreground = new SolidColorBrush(SystemColors.ControlTextColor);
+                    var isRowSelected = AttributesDataGrid.SelectedCells.Any(c => ReferenceEquals(c.Item, row.Item));
+                    cell.Background = new SolidColorBrush(isRowSelected ? Color.FromRgb(0xDB, 0xEA, 0xFE) : SystemColors.ControlColor);
+                    cell.Foreground = new SolidColorBrush(SystemColors.ControlTextColor);
                         cell.ClearValue(DataGridCell.FontStyleProperty);
                         continue;
                     }
 
-                    // Set background for non-editable columns (File, LayoutOwner, BlockName) - yellow/orange by file + shade by record
+                    // Set background for non-editable columns (File, LayoutOwner, BlockName) - yellow/green by file + shade by record
                     if (colName == "File" || colName == "LayoutOwner" || colName == "BlockName")
                     {
                         cell.Background = new SolidColorBrush(nonEditableBgColor);
                         cell.Foreground = Brushes.Black;
                         cell.ClearValue(DataGridCell.FontStyleProperty);
+                        if (colName == "BlockName")
+                        {
+                            // Separator line after the frozen columns
+                            cell.BorderThickness = new Thickness(0, 0, 1, 0);
+                            cell.BorderBrush = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB));
+                        }
+                        else
+                        {
+                            cell.BorderThickness = new Thickness(0);
+                            cell.BorderBrush = Brushes.Transparent;
+                        }
                         continue;
                     }
 
@@ -853,11 +895,11 @@ namespace CadFilesUpdater.Windows
                     var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
                 if (_changes.ContainsKey(key))
                 {
-                    // Changed cell: alternating green shades by global row index
-                    var greenLight = Color.FromRgb(0xBB, 0xF7, 0xD0); // existing light green
-                    var greenDark = Color.FromRgb(0x86, 0xEF, 0xAC);  // darker green
-                    var green = (globalRowIndex % 2 == 0) ? greenLight : greenDark;
-                    cell.Background = new SolidColorBrush(green);
+                    // Changed cell: alternating blue shades by global row index
+                    var blueLight = Color.FromRgb(0xDB, 0xEA, 0xFE); // light blue
+                    var blueDark = Color.FromRgb(0xBF, 0xDB, 0xFE);  // darker blue
+                    var blue = (globalRowIndex % 2 == 0) ? blueLight : blueDark;
+                    cell.Background = new SolidColorBrush(blue);
                     cell.Foreground = Brushes.Black;
                     cell.FontStyle = FontStyles.Normal;
                 }
@@ -867,6 +909,8 @@ namespace CadFilesUpdater.Windows
                         cell.Background = new SolidColorBrush(nonEditableBgColor);
                         cell.Foreground = Brushes.Gray;
                         cell.FontStyle = FontStyles.Italic;
+                        cell.BorderThickness = new Thickness(0);
+                        cell.BorderBrush = Brushes.Transparent;
                     }
                     else
                     {
@@ -874,6 +918,8 @@ namespace CadFilesUpdater.Windows
                         cell.Background = new SolidColorBrush(editableBgColor);
                         cell.Foreground = Brushes.Black;
                         cell.ClearValue(DataGridCell.FontStyleProperty);
+                        cell.BorderThickness = new Thickness(0);
+                        cell.BorderBrush = Brushes.Transparent;
                     }
                 }
             }
@@ -925,6 +971,9 @@ namespace CadFilesUpdater.Windows
             {
                 ScheduleGridStyleRefresh();
             }
+
+            if (AttributesDataGrid.SelectedCells.Count > 0 || AttributesDataGrid.CurrentCell.Item != null)
+                UpdateSelectionAdorner();
         }
 
         private void AttributesDataGrid_Sorting(object sender, DataGridSortingEventArgs e)
@@ -943,26 +992,284 @@ namespace CadFilesUpdater.Windows
             var cell = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject);
             if (cell == null) return;
 
+            // Row-number column selects full row
             var colName = cell.Column?.SortMemberPath;
-            if (!string.Equals(colName, "RowNumber", StringComparison.OrdinalIgnoreCase)) return;
+            if (string.Equals(colName, "RowNumber", StringComparison.OrdinalIgnoreCase))
+            {
+                var row = FindAncestor<DataGridRow>(cell);
+                if (row == null) return;
 
-            var row = FindAncestor<DataGridRow>(cell);
-            if (row == null) return;
+                var rowIndex = AttributesDataGrid.ItemContainerGenerator.IndexFromContainer(row);
+                if (rowIndex < 0) return;
 
+                var isCtrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+                var isShift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+
+                if (!isCtrl && !isShift)
+                {
+                    AttributesDataGrid.SelectedCells.Clear();
+                    SelectRowCells(rowIndex, add: true);
+                }
+                else if (isShift)
+                {
+                    if (_lastRowHeaderIndex < 0) _lastRowHeaderIndex = rowIndex;
+                    AttributesDataGrid.SelectedCells.Clear();
+                    var start = Math.Min(_lastRowHeaderIndex, rowIndex);
+                    var end = Math.Max(_lastRowHeaderIndex, rowIndex);
+                    for (int i = start; i <= end; i++)
+                        SelectRowCells(i, add: true);
+                }
+                else if (isCtrl)
+                {
+                    if (IsRowSelected(rowIndex))
+                        DeselectRowCells(rowIndex);
+                    else
+                        SelectRowCells(rowIndex, add: true);
+                }
+
+                _lastRowHeaderIndex = rowIndex;
+
+                var firstColumn = GetFirstSelectableColumn();
+                if (firstColumn != null)
+                    AttributesDataGrid.CurrentCell = new DataGridCellInfo(row.Item, firstColumn);
+
+                e.Handled = true;
+                return;
+            }
+
+            // Allow starting a new drag selection from the previously selected cell
+            var hasModifiers = (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != ModifierKeys.None;
+            if (!hasModifiers && cell.IsSelected && !cell.IsEditing)
+            {
+                AttributesDataGrid.SelectedCells.Clear();
+                if (cell.Column != null)
+                    AttributesDataGrid.CurrentCell = new DataGridCellInfo(cell.DataContext, cell.Column);
+            }
+        }
+
+        private void AttributesDataGrid_ColumnHeader_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            var header = sender as DataGridColumnHeader;
+            if (header == null || header.Column == null) return;
+
+            // Allow column resizing (don't handle clicks on the grippers)
+            var pos = e.GetPosition(header);
+            if (pos.X <= 6 || pos.X >= header.ActualWidth - 6)
+                return;
+            if (FindAncestor<Thumb>(e.OriginalSource as DependencyObject) != null)
+                return;
+
+            // Skip RowNumber column
+            var colName = header.Column.SortMemberPath;
+            if (string.Equals(colName, "RowNumber", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            // Clear current selection
             AttributesDataGrid.SelectedCells.Clear();
-            DataGridColumn firstColumn = null;
+
+            // Select all cells in this column
+            foreach (var item in AttributesDataGrid.Items)
+            {
+                AttributesDataGrid.SelectedCells.Add(new DataGridCellInfo(item, header.Column));
+            }
+
+            // Set current cell to first cell in column
+            if (AttributesDataGrid.Items.Count > 0)
+            {
+                AttributesDataGrid.CurrentCell = new DataGridCellInfo(AttributesDataGrid.Items[0], header.Column);
+            }
+
+            e.Handled = true;
+        }
+
+        private DataGridColumn GetFirstSelectableColumn()
+        {
             foreach (var column in AttributesDataGrid.Columns)
             {
                 if (column.Visibility != Visibility.Visible) continue;
                 if (string.Equals(column.SortMemberPath, "RowNumber", StringComparison.OrdinalIgnoreCase))
                     continue;
-                AttributesDataGrid.SelectedCells.Add(new DataGridCellInfo(row.Item, column));
-                if (firstColumn == null) firstColumn = column;
+                return column;
+            }
+            return null;
+        }
+
+        private void SelectRowCells(int rowIndex, bool add)
+        {
+            if (rowIndex < 0 || rowIndex >= AttributesDataGrid.Items.Count) return;
+            var item = AttributesDataGrid.Items[rowIndex];
+            foreach (var column in AttributesDataGrid.Columns)
+            {
+                if (column.Visibility != Visibility.Visible) continue;
+                if (string.Equals(column.SortMemberPath, "RowNumber", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                AttributesDataGrid.SelectedCells.Add(new DataGridCellInfo(item, column));
+            }
+        }
+
+        private void DeselectRowCells(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= AttributesDataGrid.Items.Count) return;
+            var item = AttributesDataGrid.Items[rowIndex];
+            var toRemove = AttributesDataGrid.SelectedCells
+                .Where(c => ReferenceEquals(c.Item, item))
+                .ToList();
+            foreach (var cell in toRemove)
+                AttributesDataGrid.SelectedCells.Remove(cell);
+        }
+
+        private bool IsRowSelected(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= AttributesDataGrid.Items.Count) return false;
+            var item = AttributesDataGrid.Items[rowIndex];
+            return AttributesDataGrid.SelectedCells.Any(c => ReferenceEquals(c.Item, item));
+        }
+
+        private void AttributesDataGrid_SelectedCellsChanged(object sender, SelectedCellsChangedEventArgs e)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                UpdateSelectionAdorner();
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+
+        private void UpdateSelectionAdorner()
+        {
+            if (AttributesDataGrid == null) return;
+            var adornerLayer = AdornerLayer.GetAdornerLayer(AttributesDataGrid);
+            if (adornerLayer == null) return;
+
+            if (_selectionAdorner == null)
+            {
+                _selectionAdorner = new SelectionAdorner(AttributesDataGrid, this);
+                adornerLayer.Add(_selectionAdorner);
             }
 
-            if (firstColumn != null)
-                AttributesDataGrid.CurrentCell = new DataGridCellInfo(row.Item, firstColumn);
-            e.Handled = true;
+            _selectionAdorner.InvalidateVisual();
+        }
+
+        private sealed class SelectionAdorner : Adorner
+        {
+            private readonly MainWindow _owner;
+            private readonly Pen _penOuter;
+            private readonly Pen _penInner;
+
+            public SelectionAdorner(DataGrid adornedElement, MainWindow owner) : base(adornedElement)
+            {
+                _owner = owner;
+                var brush = new SolidColorBrush(Color.FromRgb(0x25, 0x63, 0xEB));
+                brush.Freeze();
+                _penOuter = new Pen(brush, 2);
+                _penInner = new Pen(brush, 2);
+                _penOuter.Freeze();
+                _penInner.Freeze();
+                IsHitTestVisible = false;
+            }
+
+            protected override void OnRender(DrawingContext drawingContext)
+            {
+                base.OnRender(drawingContext);
+
+                var grid = (DataGrid)AdornedElement;
+                var selectedCells = grid.SelectedCells;
+                if (selectedCells.Count == 0 && grid.CurrentCell.Item == null) return;
+
+                var allSelectedCells = new List<DataGridCellInfo>();
+                foreach (var cellInfo in selectedCells)
+                {
+                    if (IsValidCellInfo(grid, cellInfo))
+                        allSelectedCells.Add(cellInfo);
+                }
+
+                var currentCell = grid.CurrentCell;
+                if (IsValidCellInfo(grid, currentCell) && !ContainsCell(allSelectedCells, currentCell))
+                    allSelectedCells.Add(currentCell);
+
+                if (allSelectedCells.Count == 0) return;
+
+                var rowIndices = new Dictionary<object, int>();
+                var colIndices = new Dictionary<DataGridColumn, int>();
+                for (int i = 0; i < grid.Items.Count; i++)
+                    rowIndices[grid.Items[i]] = i;
+                for (int i = 0; i < grid.Columns.Count; i++)
+                {
+                    var col = grid.Columns[i];
+                    if (col.Visibility != Visibility.Visible) continue;
+                    colIndices[col] = col.DisplayIndex;
+                }
+
+                var selectedMap = new HashSet<(int row, int col)>();
+                foreach (var cellInfo in allSelectedCells)
+                {
+                    if (!rowIndices.TryGetValue(cellInfo.Item, out int rowIndex) ||
+                        !colIndices.TryGetValue(cellInfo.Column, out int colIndex))
+                        continue;
+                    selectedMap.Add((rowIndex, colIndex));
+                }
+
+                foreach (var cellInfo in allSelectedCells)
+                {
+                    if (!rowIndices.TryGetValue(cellInfo.Item, out int rowIndex) ||
+                        !colIndices.TryGetValue(cellInfo.Column, out int colIndex))
+                        continue;
+
+                    var row = grid.ItemContainerGenerator.ContainerFromIndex(rowIndex) as DataGridRow;
+                    if (row == null) continue;
+                    var cell = _owner.GetCell(row, colIndex);
+                    if (cell == null) continue;
+
+                    var bounds = cell.TransformToAncestor(grid).TransformBounds(new Rect(new Point(0, 0), cell.RenderSize));
+
+                    bool hasTopNeighbor = selectedMap.Contains((rowIndex - 1, colIndex));
+                    bool hasBottomNeighbor = selectedMap.Contains((rowIndex + 1, colIndex));
+                    bool hasLeftNeighbor = selectedMap.Contains((rowIndex, colIndex - 1));
+                    bool hasRightNeighbor = selectedMap.Contains((rowIndex, colIndex + 1));
+
+                    // Draw top edge
+                    if (!hasTopNeighbor)
+                        drawingContext.DrawLine(_penOuter, bounds.TopLeft, bounds.TopRight);
+                    else
+                        drawingContext.DrawLine(_penInner, bounds.TopLeft, bounds.TopRight);
+
+                    // Draw left edge
+                    if (!hasLeftNeighbor)
+                        drawingContext.DrawLine(_penOuter, bounds.TopLeft, bounds.BottomLeft);
+                    else
+                        drawingContext.DrawLine(_penInner, bounds.TopLeft, bounds.BottomLeft);
+
+                    // Draw right edge
+                    if (!hasRightNeighbor)
+                        drawingContext.DrawLine(_penOuter, bounds.TopRight, bounds.BottomRight);
+                    else
+                        drawingContext.DrawLine(_penInner, bounds.TopRight, bounds.BottomRight);
+
+                    // Draw bottom edge
+                    if (!hasBottomNeighbor)
+                        drawingContext.DrawLine(_penOuter, bounds.BottomLeft, bounds.BottomRight);
+                    else
+                        drawingContext.DrawLine(_penInner, bounds.BottomLeft, bounds.BottomRight);
+                }
+            }
+
+            private static bool IsValidCellInfo(DataGrid grid, DataGridCellInfo cellInfo)
+            {
+                if (grid == null) return false;
+                if (cellInfo.Item == null || cellInfo.Column == null) return false;
+                if (!grid.Items.Contains(cellInfo.Item)) return false;
+                if (!grid.Columns.Contains(cellInfo.Column)) return false;
+                return true;
+            }
+
+            private static bool ContainsCell(List<DataGridCellInfo> cells, DataGridCellInfo target)
+            {
+                for (int i = 0; i < cells.Count; i++)
+                {
+                    if (ReferenceEquals(cells[i].Item, target.Item) &&
+                        ReferenceEquals(cells[i].Column, target.Column))
+                        return true;
+                }
+                return false;
+            }
         }
 
         private static T FindVisualChild<T>(DependencyObject obj) where T : DependencyObject
@@ -977,7 +1284,6 @@ namespace CadFilesUpdater.Windows
             }
             return null;
         }
-
         private void ApplySimilar_Click(object sender, RoutedEventArgs e)
         {
             var allFiles = _files.Select(f => f.FilePath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -1445,6 +1751,15 @@ namespace CadFilesUpdater.Windows
             }
         }
 
+        private void AttributesDataGrid_PreviewTextInput(object sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            if (AttributesDataGrid.SelectedCells.Count > 1)
+            {
+                // Prevent typing when multiple cells are selected
+                e.Handled = true;
+            }
+        }
+
         #region Undo/Redo
 
         private void EnsureUndoBaseline()
@@ -1632,7 +1947,7 @@ namespace CadFilesUpdater.Windows
                                 ? System.Windows.Visibility.Visible
                                 : System.Windows.Visibility.Collapsed;
                         }
-                        else if (name == "ContextMenu_ApplySimilar")
+                        else if (name == "ContextMenu_ApplySimilar_AllFiles" || name == "ContextMenu_ApplySimilar_SelectedFiles")
                         {
                             // Hide for multi-cell selection
                             menuItem.Visibility = (isEditable && selectedCellCount <= 1)
@@ -1644,6 +1959,44 @@ namespace CadFilesUpdater.Windows
                                  name == "ContextMenu_Delete")
                         {
                             menuItem.Visibility = isEditable ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+                        }
+                        else if (name == "ContextMenu_OpenFile")
+                        {
+                            // Count unique files in selection
+                            var filePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            if (AttributesDataGrid.SelectedCells.Count > 0)
+                            {
+                                foreach (var sc in AttributesDataGrid.SelectedCells)
+                                {
+                                    var drv = sc.Item as DataRowView;
+                                    if (drv != null)
+                                    {
+                                        var fp = drv.Row["FilePath"]?.ToString();
+                                        if (!string.IsNullOrWhiteSpace(fp))
+                                            filePaths.Add(fp);
+                                    }
+                                }
+                            }
+                            else if (cell.HasValue)
+                            {
+                                var drv = cell.Value.Item as DataRowView;
+                                if (drv != null)
+                                {
+                                    var fp = drv.Row["FilePath"]?.ToString();
+                                    if (!string.IsNullOrWhiteSpace(fp))
+                                        filePaths.Add(fp);
+                                }
+                            }
+                            
+                            // Update header text based on file count
+                            if (filePaths.Count > 1)
+                                menuItem.Header = "Open files";
+                            else
+                                menuItem.Header = "Open file";
+                            
+                            menuItem.Visibility = filePaths.Count > 0 
+                                ? System.Windows.Visibility.Visible 
+                                : System.Windows.Visibility.Collapsed;
                         }
                     }
                 }
@@ -1670,7 +2023,7 @@ namespace CadFilesUpdater.Windows
             CopyTopCellsDown();
         }
 
-        private void ContextMenu_ApplySimilar_Click(object sender, RoutedEventArgs e)
+        private void ApplySimilarToFiles(bool allFiles)
         {
             // Get the value from the clicked cell
             var cell = GetSingleTargetCell();
@@ -1704,13 +2057,19 @@ namespace CadFilesUpdater.Windows
             if (string.Equals(valueToApply, "N/A", StringComparison.OrdinalIgnoreCase))
                 return;
 
-            // Find all instances of this block across all files and apply the value
+            // Determine target files
+            var targetFiles = allFiles
+                ? _instancesByFile.Keys.ToList()
+                : GetSelectedFilePaths();
+
+            // Find all instances of this block in target files and apply the value
             int appliedCount = 0;
             bool anyChange = false;
             bool baselineEnsured = false;
-            foreach (var fileInstances in _instancesByFile)
+            foreach (var fp in targetFiles)
             {
-                foreach (var row in fileInstances.Value)
+                if (!_instancesByFile.TryGetValue(fp, out var fileInstances)) continue;
+                foreach (var row in fileInstances)
                 {
                     // Match by block name (case-insensitive)
                     if (string.Equals(row.BlockName, blockName, StringComparison.OrdinalIgnoreCase))
@@ -1761,16 +2120,26 @@ namespace CadFilesUpdater.Windows
             }
 
             if (anyChange)
-                RecordUndoState("Apply value to all similar attributes");
+                RecordUndoState($"Apply value to all similar attributes ({(allFiles ? "all files" : "selected files")})");
 
             RebuildGridPreservingScroll();
             UpdateUndoRedoButtons();
 
             if (appliedCount > 0)
             {
-                MessageBox.Show($"Applied value to {appliedCount} attribute(s) in block '{blockName}', attribute '{colName}' across all files.", 
+                MessageBox.Show($"Applied value to {appliedCount} attribute(s) in block '{blockName}', attribute '{colName}' across {(allFiles ? "all" : "selected")} files.", 
                     "Apply Similar", MessageBoxButton.OK, MessageBoxImage.Information);
             }
+        }
+
+        private void ContextMenu_ApplySimilar_AllFiles_Click(object sender, RoutedEventArgs e)
+        {
+            ApplySimilarToFiles(allFiles: true);
+        }
+
+        private void ContextMenu_ApplySimilar_SelectedFiles_Click(object sender, RoutedEventArgs e)
+        {
+            ApplySimilarToFiles(allFiles: false);
         }
 
         private void ContextMenu_RevertAttribute_Click(object sender, RoutedEventArgs e)
@@ -1906,27 +2275,88 @@ namespace CadFilesUpdater.Windows
             var selectedCells = AttributesDataGrid.SelectedCells;
             if (selectedCells.Count == 0 && AttributesDataGrid.CurrentCell.Item == null) return;
 
-            string filePath = null;
+            // Collect unique file paths from selection
+            var filePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
             if (selectedCells.Count > 0)
             {
-                var drv = selectedCells[0].Item as DataRowView;
-                filePath = drv?.Row["FilePath"]?.ToString();
+                foreach (var sc in selectedCells)
+                {
+                    var drv = sc.Item as DataRowView;
+                    if (drv != null)
+                    {
+                        var fp = drv.Row["FilePath"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(fp))
+                            filePaths.Add(fp);
+                    }
+                }
             }
             else if (AttributesDataGrid.CurrentCell.Item != null)
             {
                 var drv = AttributesDataGrid.CurrentCell.Item as DataRowView;
-                filePath = drv?.Row["FilePath"]?.ToString();
+                if (drv != null)
+                {
+                    var fp = drv.Row["FilePath"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(fp))
+                        filePaths.Add(fp);
+                }
             }
 
-            if (string.IsNullOrWhiteSpace(filePath)) return;
-            OpenFileInAutoCad(filePath);
+            if (filePaths.Count == 0) return;
+            
+            // Open all files
+            foreach (var filePath in filePaths)
+            {
+                OpenFileInAutoCad(filePath);
+            }
+        }
+
+        private void FilesListView_ContextMenuOpening(object sender, RoutedEventArgs e)
+        {
+            var contextMenu = sender as System.Windows.Controls.ContextMenu;
+            if (contextMenu == null) return;
+
+            var selectedCount = FilesListView.SelectedItems.Count;
+            if (selectedCount == 0 && FilesListView.SelectedItem != null)
+                selectedCount = 1;
+
+            foreach (var item in contextMenu.Items)
+            {
+                if (item is System.Windows.Controls.MenuItem menuItem && menuItem.Name == "FilesContextMenu_OpenFile")
+                {
+                    menuItem.Header = selectedCount > 1 ? "Open files" : "Open file";
+                    break;
+                }
+            }
         }
 
         private void FilesContext_OpenInAutoCAD_Click(object sender, RoutedEventArgs e)
         {
-            var entry = FilesListView.SelectedItem as FileEntry;
-            if (entry == null || string.IsNullOrWhiteSpace(entry.FilePath)) return;
-            OpenFileInAutoCad(entry.FilePath);
+            var selectedFiles = new List<string>();
+            
+            if (FilesListView.SelectedItems.Count > 0)
+            {
+                foreach (var item in FilesListView.SelectedItems)
+                {
+                    var entry = item as FileEntry;
+                    if (entry != null && !string.IsNullOrWhiteSpace(entry.FilePath))
+                        selectedFiles.Add(entry.FilePath);
+                }
+            }
+            else if (FilesListView.SelectedItem != null)
+            {
+                var entry = FilesListView.SelectedItem as FileEntry;
+                if (entry != null && !string.IsNullOrWhiteSpace(entry.FilePath))
+                    selectedFiles.Add(entry.FilePath);
+            }
+
+            if (selectedFiles.Count == 0) return;
+
+            // Open all selected files
+            foreach (var filePath in selectedFiles)
+            {
+                OpenFileInAutoCad(filePath);
+            }
         }
 
         private void OpenFileInAutoCad(string filePath)
@@ -2193,8 +2623,18 @@ namespace CadFilesUpdater.Windows
                 return false;
             }
 
+            pasteValue = NormalizeSingleLineValue(pasteValue);
+
             var cells = GetTargetCells();
             if (cells.Count == 0) return false;
+
+            var targetRows = new HashSet<DataRowView>();
+            foreach (var cell in cells)
+            {
+                if (cell.Item is DataRowView drv)
+                    targetRows.Add(drv);
+            }
+            LogRowHeights("before paste", targetRows);
 
             bool anyChange = false;
             bool baselineEnsured = false;
@@ -2259,6 +2699,10 @@ namespace CadFilesUpdater.Windows
                 RecordUndoState(cells.Count > 1 ? "Paste to cells" : "Paste");
                 UpdateUndoRedoButtons();
                 RefreshGridCellStylesForRows(changedRows);
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    LogRowHeights("after paste", targetRows);
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
             }
             return true;
         }
@@ -2341,6 +2785,43 @@ namespace CadFilesUpdater.Windows
             return true;
         }
 
+        private void LogRowHeights(string label, IEnumerable<DataRowView> rows)
+        {
+            if (rows == null) return;
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine($"[{DateTime.Now:HH:mm:ss.fff}] {label}");
+                foreach (var drv in rows)
+                {
+                    var row = AttributesDataGrid.ItemContainerGenerator.ContainerFromItem(drv) as DataGridRow;
+                    var rowIndex = AttributesDataGrid.Items.IndexOf(drv);
+                    if (row == null)
+                    {
+                        sb.AppendLine($"  row {rowIndex}: not realized");
+                        continue;
+                    }
+                    sb.AppendLine($"  row {rowIndex}: ActualHeight={row.ActualHeight:0.##}, Height={row.Height}, MinHeight={row.MinHeight}");
+                }
+                File.AppendAllText(LogFilePath, sb.ToString());
+                Debug.WriteLine(sb.ToString());
+            }
+            catch
+            {
+                // best-effort logging
+            }
+        }
+
+        private string NormalizeSingleLineValue(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return value ?? "";
+            // Avoid multi-line values that expand row height
+            return value
+                .Replace("\r\n", " ")
+                .Replace("\n", " ")
+                .Replace("\r", " ");
+        }
+
         private void CopyTopCellsDown()
         {
             var cells = GetTargetCells();
@@ -2374,7 +2855,7 @@ namespace CadFilesUpdater.Windows
                 var topColName = topCell.Column.SortMemberPath;
                 if (topDrv == null || string.IsNullOrWhiteSpace(topColName)) continue;
 
-                var topValue = GetCellText(topCell);
+                var topValue = NormalizeSingleLineValue(GetCellText(topCell));
                 if (string.Equals(topValue, "N/A", StringComparison.OrdinalIgnoreCase)) continue;
 
                 foreach (var cell in group)
