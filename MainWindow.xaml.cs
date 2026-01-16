@@ -591,6 +591,24 @@ namespace CadFilesUpdater.Windows
             // (headers are user-friendly and not stable identifiers).
             e.Column.SortMemberPath = e.PropertyName;
 
+            if (string.Equals(e.PropertyName, "RowNumber", StringComparison.OrdinalIgnoreCase))
+            {
+                e.Column.Header = "#";
+                e.Column.IsReadOnly = true;
+                e.Column.CanUserSort = false;
+                e.Column.CanUserReorder = false;
+                e.Column.DisplayIndex = 0;
+                e.Column.Width = 52;
+                if (e.Column is DataGridTextColumn rowColumn)
+                {
+                    var elementStyle = new Style(typeof(TextBlock));
+                    elementStyle.Setters.Add(new Setter(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Center));
+                    elementStyle.Setters.Add(new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center));
+                    rowColumn.ElementStyle = elementStyle;
+                }
+                return;
+            }
+
             // Friendly headers for non-editable columns (colors set dynamically in RefreshGridCellStylesForRow)
             if (string.Equals(e.PropertyName, "File", StringComparison.OrdinalIgnoreCase))
             {
@@ -779,7 +797,9 @@ namespace CadFilesUpdater.Windows
                 }
 
                 bool isEvenFile = (fileGroupIndex % 2 == 0);
-                bool isEvenRecord = (fileRowIndex % 2 == 0);
+                var globalRowIndex = AttributesDataGrid.Items.IndexOf(drv);
+                if (globalRowIndex < 0) globalRowIndex = fileRowIndex;
+                bool isEvenRecord = (globalRowIndex % 2 == 0);
 
                 // File grouping colors (yellow/blue) with alternating shades per record
                 var yellowLight = Color.FromRgb(0xFE, 0xF9, 0xC3); // existing light yellow
@@ -808,7 +828,16 @@ namespace CadFilesUpdater.Windows
                         if (cell == null) continue;
                     }
                     
-                    // Set background for non-editable columns (File, LayoutOwner, BlockName) - yellow/blue by file + shade by record
+                    // Row number column - header-like background, no row coloring
+                    if (colName == "RowNumber")
+                    {
+                        cell.Background = new SolidColorBrush(SystemColors.ControlColor);
+                        cell.Foreground = new SolidColorBrush(SystemColors.ControlTextColor);
+                        cell.ClearValue(DataGridCell.FontStyleProperty);
+                        continue;
+                    }
+
+                    // Set background for non-editable columns (File, LayoutOwner, BlockName) - yellow/orange by file + shade by record
                     if (colName == "File" || colName == "LayoutOwner" || colName == "BlockName")
                     {
                         cell.Background = new SolidColorBrush(nonEditableBgColor);
@@ -822,13 +851,16 @@ namespace CadFilesUpdater.Windows
                     try { cellValue = drv.Row[colName]?.ToString(); } catch { }
 
                     var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
-                    if (_changes.ContainsKey(key))
-                    {
-                        // Changed cell: light green
-                        cell.Background = new SolidColorBrush(Color.FromRgb(0xBB, 0xF7, 0xD0)); // light green
-                        cell.Foreground = Brushes.Black;
-                        cell.FontStyle = FontStyles.Normal;
-                    }
+                if (_changes.ContainsKey(key))
+                {
+                    // Changed cell: alternating green shades by global row index
+                    var greenLight = Color.FromRgb(0xBB, 0xF7, 0xD0); // existing light green
+                    var greenDark = Color.FromRgb(0x86, 0xEF, 0xAC);  // darker green
+                    var green = (globalRowIndex % 2 == 0) ? greenLight : greenDark;
+                    cell.Background = new SolidColorBrush(green);
+                    cell.Foreground = Brushes.Black;
+                    cell.FontStyle = FontStyles.Normal;
+                }
                     else if (string.Equals(cellValue, "N/A", StringComparison.OrdinalIgnoreCase))
                     {
                         // N/A cell: keep non-editable background (yellow/blue + shade)
@@ -848,6 +880,19 @@ namespace CadFilesUpdater.Windows
             catch
             {
                 // best-effort
+            }
+        }
+
+        private void RefreshGridCellStylesForRows(IEnumerable<DataRowView> rows)
+        {
+            if (rows == null) return;
+            foreach (var drv in rows)
+            {
+                var row = AttributesDataGrid.ItemContainerGenerator.ContainerFromItem(drv) as DataGridRow;
+                if (row != null)
+                {
+                    RefreshGridCellStylesForRow(row);
+                }
             }
         }
 
@@ -888,8 +933,36 @@ namespace CadFilesUpdater.Windows
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 UpdateFileRowIndicesFromView();
+                UpdateRowNumbersFromView();
                 RefreshGridCellStylesForVisibleRows();
             }), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
+
+        private void AttributesDataGrid_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            var cell = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject);
+            if (cell == null) return;
+
+            var colName = cell.Column?.SortMemberPath;
+            if (!string.Equals(colName, "RowNumber", StringComparison.OrdinalIgnoreCase)) return;
+
+            var row = FindAncestor<DataGridRow>(cell);
+            if (row == null) return;
+
+            AttributesDataGrid.SelectedCells.Clear();
+            DataGridColumn firstColumn = null;
+            foreach (var column in AttributesDataGrid.Columns)
+            {
+                if (column.Visibility != Visibility.Visible) continue;
+                if (string.Equals(column.SortMemberPath, "RowNumber", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                AttributesDataGrid.SelectedCells.Add(new DataGridCellInfo(row.Item, column));
+                if (firstColumn == null) firstColumn = column;
+            }
+
+            if (firstColumn != null)
+                AttributesDataGrid.CurrentCell = new DataGridCellInfo(row.Item, firstColumn);
+            e.Handled = true;
         }
 
         private static T FindVisualChild<T>(DependencyObject obj) where T : DependencyObject
@@ -1183,6 +1256,7 @@ namespace CadFilesUpdater.Windows
                     attributeTags.Add(t);
 
             _table = new DataTable();
+            _table.Columns.Add("RowNumber", typeof(int));
             _table.Columns.Add("File", typeof(string));
             _table.Columns.Add("LayoutOwner", typeof(string));
             _table.Columns.Add("BlockName", typeof(string));
@@ -1195,9 +1269,11 @@ namespace CadFilesUpdater.Windows
                 _table.Columns.Add(tag, typeof(string));
 
             var fileRowCounters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            int rowNumber = 1;
             foreach (var r in visibleRows)
             {
                 var dr = _table.NewRow();
+                dr["RowNumber"] = rowNumber++;
                 var fileGroupIndex = _fileOrder.IndexOf(r.FilePath);
                 if (fileGroupIndex < 0) fileGroupIndex = 0;
                 var fileRowIndex = fileRowCounters.TryGetValue(r.FilePath, out var existingIndex) ? existingIndex : 0;
@@ -1230,6 +1306,7 @@ namespace CadFilesUpdater.Windows
             RestoreColumnDisplayOrder();
             
             UpdateFileRowIndicesFromView();
+            UpdateRowNumbersFromView();
             RefreshAllGridCellStyles();
         }
 
@@ -1507,6 +1584,8 @@ namespace CadFilesUpdater.Windows
             var cell = GetSingleTargetCell();
             bool isEditable = false;
             bool hasCell = false;
+            int selectedCellCount = 0;
+            int selectedRowCount = 0;
             
             if (cell.HasValue)
             {
@@ -1517,6 +1596,20 @@ namespace CadFilesUpdater.Windows
                     hasCell = true;
                     isEditable = IsAttributeColumn(colName);
                 }
+            }
+
+            if (AttributesDataGrid.SelectedCells.Count > 0)
+            {
+                selectedCellCount = AttributesDataGrid.SelectedCells.Count;
+                var rowSet = new HashSet<object>();
+                foreach (var sc in AttributesDataGrid.SelectedCells)
+                    rowSet.Add(sc.Item);
+                selectedRowCount = rowSet.Count;
+            }
+            else if (cell.HasValue)
+            {
+                selectedCellCount = 1;
+                selectedRowCount = 1;
             }
             
             // Find menu items by name (they're defined in XAML with x:Name)
@@ -1532,10 +1625,23 @@ namespace CadFilesUpdater.Windows
                         {
                             menuItem.Visibility = hasCell ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
                         }
+                        else if (name == "ContextMenu_CopyTopDown")
+                        {
+                            // Show only when selection spans multiple rows
+                            menuItem.Visibility = (isEditable && selectedRowCount > 1)
+                                ? System.Windows.Visibility.Visible
+                                : System.Windows.Visibility.Collapsed;
+                        }
+                        else if (name == "ContextMenu_ApplySimilar")
+                        {
+                            // Hide for multi-cell selection
+                            menuItem.Visibility = (isEditable && selectedCellCount <= 1)
+                                ? System.Windows.Visibility.Visible
+                                : System.Windows.Visibility.Collapsed;
+                        }
                         else if (name == "ContextMenu_RestoreCell" || 
                                  name == "ContextMenu_Paste" || 
-                                 name == "ContextMenu_Delete" ||
-                                 name == "ContextMenu_ApplySimilar")
+                                 name == "ContextMenu_Delete")
                         {
                             menuItem.Visibility = isEditable ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
                         }
@@ -1557,6 +1663,11 @@ namespace CadFilesUpdater.Windows
         private void ContextMenu_DeleteCell_Click(object sender, RoutedEventArgs e)
         {
             TryClearSelectedCells();
+        }
+
+        private void ContextMenu_CopyTopDown_Click(object sender, RoutedEventArgs e)
+        {
+            CopyTopCellsDown();
         }
 
         private void ContextMenu_ApplySimilar_Click(object sender, RoutedEventArgs e)
@@ -1957,7 +2068,8 @@ namespace CadFilesUpdater.Windows
 
         private bool IsAttributeColumn(string colName)
         {
-            return !(colName.Equals("File", StringComparison.OrdinalIgnoreCase)
+            return !(colName.Equals("RowNumber", StringComparison.OrdinalIgnoreCase)
+                     || colName.Equals("File", StringComparison.OrdinalIgnoreCase)
                      || colName.Equals("LayoutOwner", StringComparison.OrdinalIgnoreCase)
                      || colName.Equals("BlockName", StringComparison.OrdinalIgnoreCase));
         }
@@ -1978,6 +2090,18 @@ namespace CadFilesUpdater.Windows
                     counters[filePath] = index + 1;
                     drv.Row["_FileRowIndex"] = index;
                 }
+            }
+        }
+
+        private void UpdateRowNumbersFromView()
+        {
+            if (_table == null || AttributesDataGrid == null) return;
+            if (!_table.Columns.Contains("RowNumber")) return;
+
+            for (int i = 0; i < AttributesDataGrid.Items.Count; i++)
+            {
+                if (AttributesDataGrid.Items[i] is DataRowView drv)
+                    drv.Row["RowNumber"] = i + 1;
             }
         }
 
@@ -2074,6 +2198,7 @@ namespace CadFilesUpdater.Windows
 
             bool anyChange = false;
             bool baselineEnsured = false;
+            var changedRows = new HashSet<DataRowView>();
             foreach (var cell in cells)
             {
                 var drv = cell.Item as DataRowView;
@@ -2084,6 +2209,7 @@ namespace CadFilesUpdater.Windows
                 string cellText = null;
                 try { cellText = drv.Row[colName]?.ToString(); } catch { }
                 if (string.Equals(cellText, "N/A", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(cellText ?? "", pasteValue ?? "", StringComparison.Ordinal)) continue;
 
                 var filePath = drv.Row["FilePath"]?.ToString();
                 var handle = drv.Row["Handle"]?.ToString();
@@ -2092,25 +2218,47 @@ namespace CadFilesUpdater.Windows
                     continue;
 
                 var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+                var originalValue = GetOriginalAttributeValue(filePath, handle, colName) ?? "";
                 var hadChange = _changes.TryGetValue(key, out var existingValue);
-                var willChange = !hadChange || !string.Equals(existingValue ?? "", pasteValue ?? "", StringComparison.Ordinal);
-                if (willChange)
+
+                if (string.Equals(originalValue, pasteValue ?? "", StringComparison.Ordinal))
                 {
-                    if (!baselineEnsured)
+                    if (hadChange)
                     {
-                        EnsureUndoBaseline();
-                        baselineEnsured = true;
+                        if (!baselineEnsured)
+                        {
+                            EnsureUndoBaseline();
+                            baselineEnsured = true;
+                        }
+                        _changes.Remove(key);
+                        drv.Row[colName] = originalValue;
+                        changedRows.Add(drv);
+                        anyChange = true;
                     }
-                    _changes[key] = pasteValue;
-                    anyChange = true;
+                }
+                else
+                {
+                    var willChange = !hadChange || !string.Equals(existingValue ?? "", pasteValue ?? "", StringComparison.Ordinal);
+                    if (willChange)
+                    {
+                        if (!baselineEnsured)
+                        {
+                            EnsureUndoBaseline();
+                            baselineEnsured = true;
+                        }
+                        _changes[key] = pasteValue;
+                        drv.Row[colName] = pasteValue;
+                        changedRows.Add(drv);
+                        anyChange = true;
+                    }
                 }
             }
 
             if (anyChange)
             {
                 RecordUndoState(cells.Count > 1 ? "Paste to cells" : "Paste");
-                RebuildGridPreservingScroll();
                 UpdateUndoRedoButtons();
+                RefreshGridCellStylesForRows(changedRows);
             }
             return true;
         }
@@ -2122,6 +2270,7 @@ namespace CadFilesUpdater.Windows
 
             bool anyChange = false;
             bool baselineEnsured = false;
+            var changedRows = new HashSet<DataRowView>();
             foreach (var cell in cells)
             {
                 var drv = cell.Item as DataRowView;
@@ -2140,27 +2289,156 @@ namespace CadFilesUpdater.Windows
                     continue;
 
                 var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+                var originalValue = GetOriginalAttributeValue(filePath, handle, colName) ?? "";
                 var hadChange = _changes.TryGetValue(key, out var existingValue);
-                var willChange = !hadChange || !string.Equals(existingValue ?? "", "", StringComparison.Ordinal);
-                if (willChange)
+
+                if (string.Equals(cellText ?? "", "", StringComparison.Ordinal) &&
+                    ((hadChange && string.Equals(existingValue ?? "", "", StringComparison.Ordinal)) ||
+                     (!hadChange && string.Equals(originalValue, "", StringComparison.Ordinal))))
                 {
-                    if (!baselineEnsured)
+                    continue;
+                }
+
+                if (string.Equals(originalValue, "", StringComparison.Ordinal))
+                {
+                    if (hadChange)
                     {
-                        EnsureUndoBaseline();
-                        baselineEnsured = true;
+                        if (!baselineEnsured)
+                        {
+                            EnsureUndoBaseline();
+                            baselineEnsured = true;
+                        }
+                        _changes.Remove(key);
+                        drv.Row[colName] = originalValue;
+                        changedRows.Add(drv);
+                        anyChange = true;
                     }
-                    _changes[key] = "";
-                    anyChange = true;
+                }
+                else
+                {
+                    var willChange = !hadChange || !string.Equals(existingValue ?? "", "", StringComparison.Ordinal);
+                    if (willChange)
+                    {
+                        if (!baselineEnsured)
+                        {
+                            EnsureUndoBaseline();
+                            baselineEnsured = true;
+                        }
+                        _changes[key] = "";
+                        drv.Row[colName] = "";
+                        changedRows.Add(drv);
+                        anyChange = true;
+                    }
                 }
             }
 
             if (anyChange)
             {
                 RecordUndoState(cells.Count > 1 ? "Delete cells content" : "Delete cell content");
-                RebuildGridPreservingScroll();
                 UpdateUndoRedoButtons();
+                RefreshGridCellStylesForRows(changedRows);
             }
             return true;
+        }
+
+        private void CopyTopCellsDown()
+        {
+            var cells = GetTargetCells();
+            if (cells.Count == 0) return;
+
+            var groups = new Dictionary<int, List<DataGridCellInfo>>();
+            foreach (var cell in cells)
+            {
+                if (cell.Column == null) continue;
+                var colIndex = cell.Column.DisplayIndex;
+                if (!groups.TryGetValue(colIndex, out var list))
+                {
+                    list = new List<DataGridCellInfo>();
+                    groups[colIndex] = list;
+                }
+                list.Add(cell);
+            }
+
+            bool anyChange = false;
+            bool baselineEnsured = false;
+            var changedRows = new HashSet<DataRowView>();
+
+            foreach (var group in groups.Values)
+            {
+                var topCell = group
+                    .OrderBy(c => AttributesDataGrid.Items.IndexOf(c.Item))
+                    .FirstOrDefault();
+                if (topCell.Item == null || topCell.Column == null) continue;
+
+                var topDrv = topCell.Item as DataRowView;
+                var topColName = topCell.Column.SortMemberPath;
+                if (topDrv == null || string.IsNullOrWhiteSpace(topColName)) continue;
+
+                var topValue = GetCellText(topCell);
+                if (string.Equals(topValue, "N/A", StringComparison.OrdinalIgnoreCase)) continue;
+
+                foreach (var cell in group)
+                {
+                    var drv = cell.Item as DataRowView;
+                    var colName = cell.Column?.SortMemberPath;
+                    if (drv == null || string.IsNullOrWhiteSpace(colName)) continue;
+                    if (!IsAttributeColumn(colName)) continue;
+
+                    string cellText = null;
+                    try { cellText = drv.Row[colName]?.ToString(); } catch { }
+                    if (string.Equals(cellText, "N/A", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.Equals(cellText ?? "", topValue ?? "", StringComparison.Ordinal)) continue;
+
+                    var filePath = drv.Row["FilePath"]?.ToString();
+                    var handle = drv.Row["Handle"]?.ToString();
+                    var blockName = drv.Row["BlockName"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(filePath) || string.IsNullOrWhiteSpace(handle) || string.IsNullOrWhiteSpace(blockName))
+                        continue;
+
+                    var key = new BlockAnalyzer.ChangeKey(filePath, handle, blockName, colName);
+                    var originalValue = GetOriginalAttributeValue(filePath, handle, colName) ?? "";
+                    var hadChange = _changes.TryGetValue(key, out var existingValue);
+
+                    if (string.Equals(originalValue, topValue ?? "", StringComparison.Ordinal))
+                    {
+                        if (hadChange)
+                        {
+                            if (!baselineEnsured)
+                            {
+                                EnsureUndoBaseline();
+                                baselineEnsured = true;
+                            }
+                            _changes.Remove(key);
+                            drv.Row[colName] = originalValue;
+                            changedRows.Add(drv);
+                            anyChange = true;
+                        }
+                    }
+                    else
+                    {
+                        var willChange = !hadChange || !string.Equals(existingValue ?? "", topValue ?? "", StringComparison.Ordinal);
+                        if (willChange)
+                        {
+                            if (!baselineEnsured)
+                            {
+                                EnsureUndoBaseline();
+                                baselineEnsured = true;
+                            }
+                            _changes[key] = topValue ?? "";
+                            drv.Row[colName] = topValue ?? "";
+                            changedRows.Add(drv);
+                            anyChange = true;
+                        }
+                    }
+                }
+            }
+
+            if (anyChange)
+            {
+                RecordUndoState("Copy top cells down");
+                UpdateUndoRedoButtons();
+                RefreshGridCellStylesForRows(changedRows);
+            }
         }
 
         private string GetCellText(DataGridCellInfo cellInfo)

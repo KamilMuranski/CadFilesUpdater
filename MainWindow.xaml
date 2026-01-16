@@ -273,7 +273,7 @@
                       CanUserAddRows="False"
                       CanUserDeleteRows="False"
                       IsReadOnly="False"
-                      FrozenColumnCount="3"
+                      FrozenColumnCount="4"
                       BeginningEdit="AttributesDataGrid_BeginningEdit"
                       CellEditEnding="AttributesDataGrid_CellEditEnding"
                       LoadingRow="AttributesDataGrid_LoadingRow"
@@ -281,13 +281,15 @@
                       Sorting="AttributesDataGrid_Sorting"
                       ScrollViewer.ScrollChanged="AttributesDataGrid_ScrollChanged"
                       PreviewKeyDown="AttributesDataGrid_PreviewKeyDown"
+                      PreviewMouseLeftButtonDown="AttributesDataGrid_PreviewMouseLeftButtonDown"
                       HeadersVisibility="All"
                       GridLinesVisibility="All"
                       AlternatingRowBackground="#FFF7F7F7"
                       RowBackground="White"
                       ContextMenuOpening="AttributesDataGrid_ContextMenuOpening"
                       SelectionMode="Extended"
-                      SelectionUnit="Cell">
+                      SelectionUnit="Cell"
+                      RowHeaderWidth="0">
                 <DataGrid.ColumnHeaderStyle>
                     <Style TargetType="DataGridColumnHeader">
                         <Setter Property="HorizontalContentAlignment" Value="Center"/>
@@ -295,23 +297,21 @@
                 </DataGrid.ColumnHeaderStyle>
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
-                        <Setter Property="BorderThickness" Value="0"/>
-                        <Setter Property="Padding" Value="4,2"/>
+                        <Setter Property="BorderThickness" Value="2"/>
+                        <Setter Property="BorderBrush" Value="Transparent"/>
+                        <Setter Property="Padding" Value="3,1"/>
                         <Style.Triggers>
                             <!-- Selected cell: blue frame -->
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter Property="BorderBrush" Value="#2563EB"/>
-                                <Setter Property="BorderThickness" Value="2"/>
                             </Trigger>
                             <!-- Focused cell: blue border -->
                             <Trigger Property="IsFocused" Value="True">
                                 <Setter Property="BorderBrush" Value="#0078D4"/>
-                                <Setter Property="BorderThickness" Value="2"/>
                             </Trigger>
                             <!-- Keyboard focus within cell -->
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
                                 <Setter Property="BorderBrush" Value="#0078D4"/>
-                                <Setter Property="BorderThickness" Value="2"/>
                             </Trigger>
                             <!-- N/A cells: yellow (non-editable via BeginningEdit) -->
                             <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Content.Text}" Value="N/A">
@@ -333,6 +333,7 @@
                         <Separator/>
                         <MenuItem x:Name="ContextMenu_Copy" Header="Copy" Click="ContextMenu_CopyCell_Click"/>
                         <MenuItem x:Name="ContextMenu_Paste" Header="Paste" Click="ContextMenu_PasteCell_Click"/>
+                        <MenuItem x:Name="ContextMenu_CopyTopDown" Header="Copy top cells down" Click="ContextMenu_CopyTopDown_Click"/>
                         <MenuItem x:Name="ContextMenu_Delete" Header="Delete cell's content" Click="ContextMenu_DeleteCell_Click"/>
                         <Separator/>
                         <MenuItem Header="Open file in AutoCAD" Click="ContextMenu_OpenInAutoCAD_Click"/>
@@ -352,6 +353,7 @@
 
                 <Button Click="ExportToExcel_Click"
                         Style="{StaticResource BottomActionButtonStyle}"
+                        Width="180"
                         Margin="0,0,10,0">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8C5;" Margin="0,0,8,0" Foreground="#107C10"/>
